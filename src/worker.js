@@ -19,6 +19,7 @@ import { connect } from './mcp/connect.js';
 import { sendViaGmail } from './mcp/gmail.js';
 import { subject as mkSubject, body as mkBody } from './scraper/email_content.js';
 import { writeDash } from './dashboard.js';
+import { startServer } from './server.js';
 import { getProfile } from './profile.js';
 import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf } from './evolve.js';
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
@@ -199,7 +200,10 @@ async function refresher() {
 // ── main ─────────────────────────────────────────────────────────────────────
 await launchChrome();
 await initDB();
+const uiPort = await startServer();           // dashboard + Questions + /api/answers + /evidence
+process.env.JOB_AGENT_PORT = String(uiPort || 7788);
 say('main', `worker start${DRY ? ' (DRY)' : ''} — concurrent lanes: scout · mailer · applier · connector`);
-beat('main', 'running');
+say('main', `dashboard + Questions tab live at http://127.0.0.1:${uiPort || 7788}`);
+beat('main', 'running', { uiPort: uiPort || 7788 });
 await Promise.all([scout(), mailer(), applier(), connector(), refresher()]);
 process.exit(0);

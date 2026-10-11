@@ -1,0 +1,12 @@
+import { initDB } from '../src/tracker.js';
+import fs from 'fs';
+process.env.JOB_AGENT_PORT = '7788';
+await initDB();
+const { writeDash } = await import('../src/dashboard.js');
+writeDash();
+const h = fs.readFileSync(new URL('../dashboard.html', import.meta.url), 'utf8');
+const m = [...new Set((h.match(/http:\/\/127\.0\.0\.1:\d+/g) || []))];
+console.log('absolute URLs in dash:', m);
+console.log('has /api/answers handler:', h.includes("/api/answers"));
+console.log('has disabled-guard:', h.includes("btn.disabled=true"));
+process.exit(0);

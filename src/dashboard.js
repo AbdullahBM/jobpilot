@@ -45,6 +45,7 @@ function table(id, head, body, empty) {
 
 export function writeDash() {
   const p = getProfile();
+  const UIPORT = process.env.JOB_AGENT_PORT || 7788;
   let state = {};
   try { state = JSON.parse(fs.readFileSync(path.join(DATA, 'worker-state.json'), 'utf8')); } catch {}
   const q = (sql, a = []) => rows(sql, a);
@@ -134,7 +135,7 @@ export function writeDash() {
   const kpi = (v, l, c) => `<div class="k" style="border-top-color:${c}"><div class="kv" style="color:${c}">${v}</div><div class="kl">${l}</div></div>`;
   const qcard = (ch, label, c, doneSt) => `<a class="qc" href="#tab-${ch}" onclick="tab('${ch}')" style="border-color:${c}55"><div class="qh" style="color:${c}">${label}</div><div><b>${queueCount(ch)}</b> queued</div><div class="dim">${doneSt}</div></a>`;
 
-  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="20">
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="45">
 <title>Job Agent — ${esc(p.name || '')}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,'Segoe UI',sans-serif;background:#0b1220;color:#e2e8f0;font-size:13px}
@@ -209,7 +210,11 @@ ${table('bank', ['Posted', 'Source', 'Role', 'Company', 'Channel', 'Email', 'Mat
 <script>
 function tab(t){document.querySelectorAll('.pane').forEach(e=>e.classList.toggle('on',e.id==='p-'+t));document.querySelectorAll('.tabs button').forEach(e=>e.classList.toggle('on',e.id==='b-'+t));history.replaceState(null,'','#tab-'+t)}
 function flt(v){v=v.toLowerCase();document.querySelectorAll('#bank tbody tr').forEach(r=>r.style.display=r.innerText.toLowerCase().includes(v)?'':'none')}
-async function ans(qkey, value){ if(!value){return} try{ await fetch('/api/answers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qkey,answer:value})}); location.reload(); }catch(e){ alert('save failed: '+e.message) } }
+async function ans(qkey, value){ if(!value){return}
+  const base = (location.protocol==='file:'||!location.port) ? 'http://127.0.0.1:${UIPORT}' : '';
+  const btn = event&&event.target; if(btn){btn.disabled=true; btn.textContent='saving…';}
+  try{ const r = await fetch(base+'/api/answers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qkey,answer:value})}); if(!r.ok) throw new Error('HTTP '+r.status); location.href = base + '/#tab-questions'; location.reload(); }
+  catch(e){ if(btn){btn.disabled=false; btn.textContent='save';} alert('Could not save — is the worker/server running? Open the dashboard at '+base+' (not the file). Error: '+e.message) } }
 tab((location.hash.match(/tab-(\\w+)/)||[])[1]||'easy_apply');
 </script></body></html>`;
   fs.writeFileSync(DASH, html, 'utf8');
