@@ -82,8 +82,15 @@ export async function fileBlockerIssues({ minCount = 3 } = {}) {
   return { filed };
 }
 
-/** One full self-contribution round: file issues, then push any code the agent changed. */
-export async function contributeRound(message = 'chore(self-evolve): sync improvements + file discovered blockers') {
+/** One full self-contribution round: file issues, then push any code the agent changed.
+ *  CONSENT-GATED: refuses unless profile.consent.autoContribute is true, or force:true is passed
+ *  (an explicit, user-initiated invocation). Nothing is pushed without opt-in. */
+export async function contributeRound(message = 'chore(self-evolve): sync improvements + file discovered blockers', { force = false } = {}) {
+  let consented = force;
+  if (!consented) {
+    try { const { getProfile } = await import('./profile.js'); consented = !!getProfile().consent?.autoContribute; } catch {}
+  }
+  if (!consented) return { skipped: true, reason: 'consent required — set profile.consent.autoContribute=true (or pass force) to let JobPilot contribute back' };
   const issues = await fileBlockerIssues().catch(e => ({ filed: [], reason: e.message }));
   const code = await contributeCode(message).catch(e => ({ pushed: false, reason: e.message }));
   return { issues, code };

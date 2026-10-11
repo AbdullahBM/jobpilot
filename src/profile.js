@@ -67,6 +67,12 @@ const DEFAULT_PROFILE = {
     cooldownBetweenActionsMs: 4000,
   },
 
+  // Explicit user consent gates (default OFF — nothing leaves the machine without opt-in).
+  consent: {
+    autoContribute: false,  // push code/doc improvements + file issues to the public repo automatically
+    selfEvolveShare: false, // share anonymized evolution insights upstream
+  },
+
   _onboarded: false,
   _updatedAt: '',
 };
@@ -81,6 +87,7 @@ function load() {
       preferences: { ...DEFAULT_PROFILE.preferences, ...(saved.preferences || {}) },
       answers: { ...(saved.answers || {}) },
       limits: { ...DEFAULT_PROFILE.limits, ...(saved.limits || {}) },
+      consent: { ...DEFAULT_PROFILE.consent, ...(saved.consent || {}) },
     };
   } catch {
     return { ...DEFAULT_PROFILE };
@@ -107,6 +114,7 @@ export function updateProfile(patch = {}) {
     answers:     { ...p.answers,     ...(patch.answers || {}) },
     limits:      { ...p.limits,      ...(patch.limits || {}) },
     smtp:        { ...p.smtp,        ...(patch.smtp || {}) },
+    consent:     { ...p.consent,     ...(patch.consent || {}) },
   };
   if (Array.isArray(patch.projects)) merged.projects = patch.projects;
   if (Array.isArray(patch.loggedInSources)) merged.loggedInSources = patch.loggedInSources;

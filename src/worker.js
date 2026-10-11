@@ -157,14 +157,20 @@ async function applier() {
       if (doEasy) {
         beat('applier', `⚡ ${j.role} @ ${j.company}`);
         const r = await easyApply({ url: j.apply_url || j.url });
+        if (r.result === 'daily_limit') {
+          // LinkedIn says "apply tomorrow" — stop Easy Apply for the rest of the day; forms keep going.
+          liCooldownUntil = Date.now() + 14 * 3600000;
+          say('applier', '🛑 LinkedIn DAILY submission limit — pausing Easy Apply ~14h (until tomorrow). Email/forms/connect continue.');
+          beat('applier', 'LinkedIn daily limit — Easy Apply paused until tomorrow');
+          continue;
+        }
         if (r.result === 'throttled') {
-          // LinkedIn is actively blocking — back off (grows with repeat hits); forms lane keeps working.
+          // LinkedIn is actively blocking — cool down 30 min (grows if it keeps happening); forms keep working.
           easyFailStreak++;
-          const mins = Math.min(60, 8 * easyFailStreak);
+          const mins = Math.min(90, 30 * easyFailStreak);
           liCooldownUntil = Date.now() + mins * 60000;
           say('applier', `🛑 LinkedIn throttle — cooling down ${mins} min`);
           beat('applier', `LinkedIn cooldown ${mins}m`);
-          // a security checkpoint usually needs the human to re-verify / re-login
           flagLogin('LinkedIn', 'LinkedIn security check — open LinkedIn and complete the check / re-login');
           continue; // don't burn this lead's attempt on a throttle
         }
@@ -173,8 +179,8 @@ async function applier() {
         else if (r.result === 'needs_answers') setStatus(j.url, 'needs_manual', r.detail);
         else if (r.result === 'closed') setStatus(j.url, 'skipped', 'closed');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
-        // repeated stuck/errors often mean soft-throttling → gentle cooldown
-        if (!['applied', 'already_applied'].includes(r.result)) { easyFailStreak++; if (easyFailStreak >= 4) { liCooldownUntil = Date.now() + 10 * 60000; say('applier', '🛑 4 Easy Apply misses in a row — 10 min cooldown'); easyFailStreak = 0; } }
+        // repeated misses in a row usually mean soft-throttling → 30-min cooldown (per your guidance)
+        if (!['applied', 'already_applied'].includes(r.result)) { easyFailStreak++; if (easyFailStreak >= 4) { liCooldownUntil = Date.now() + 30 * 60000; say('applier', '🛑 4 Easy Apply misses in a row — 30 min cooldown'); easyFailStreak = 0; } }
         log('li_easy_apply', j.company, j.role, j.url, r.result === 'applied' ? 'ok' : /needs_answers/.test(r.result) ? 'manual' : /already|no_easy|closed/.test(r.result) ? 'skip' : 'fail', `${r.result}: ${r.detail}`);
         say('applier', `⚡ ${r.result} → ${j.role} @ ${j.company}`);
       } else {
@@ -224,9 +230,9 @@ async function refresher() {
   let lastContribute = 0;
   while (Date.now() - started < RUN_MS) {
     try { writeDash(); writePlaybook(); } catch {}
-    // Every ~20 min: contribute improvements back to the public repo (issues + allowlisted
-    // code/doc changes). Hard-guarded against ever committing data/ or credentials.
-    if (!DRY && Date.now() - lastContribute > 20 * 60000) {
+    // Every ~20 min: contribute improvements back to the public repo — ONLY with explicit
+    // user consent (profile.consent.autoContribute). Hard-guarded against committing data/creds.
+    if (!DRY && getProfile().consent?.autoContribute && Date.now() - lastContribute > 20 * 60000) {
       lastContribute = Date.now();
       try {
         const { contributeRound } = await import('./contribute.js');

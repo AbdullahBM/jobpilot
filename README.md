@@ -65,8 +65,9 @@ and a saved **screenshot + HTML snapshot** under `data/evolution/`. Then it:
    dashboard — answer it one time, remembered forever (fuzzy-matched across all future applications).
 3. **📈 Reweights itself.** It tracks which search queries and ATS domains actually convert and
    shifts toward what works (UCB bandit), auto-skipping dead ends.
-4. **🔁 Contributes back.** It files GitHub issues for blockers it discovers and pushes code/doc
-   improvements to this repo — **automatically, attributed to you, never leaking your data.**
+4. **🔁 Contributes back (opt-in).** With your one-click consent, it files GitHub issues for
+   blockers it discovers and pushes code/doc improvements to this repo — **attributed to you,
+   hard-guarded so it never touches your data.** Off by default; toggle it from the dashboard.
 
 > Your coding agent reads the auto-generated `data/evolution/PLAYBOOK.md`, patches the relevant
 > module, marks the encounter fixed — and the fix is pushed back for everyone. **The repository
@@ -189,8 +190,9 @@ jobpilot/
 - **Your data never leaves your machine.** Profile, CV, scraped jobs, dedup history, harvested
   answers, and the logged-in Chrome profile all live under `data/`, which is **gitignored**.
 - **No credentials in code.** JobPilot uses your existing browser sessions — no API keys, no SMTP.
-- **The self-contribution loop is data-safe by construction**: an allowlist + a sensitive-path
-  tripwire abort any push that would include `data/`, `.env`, drafts, logs, screenshots or the DB.
+- **The self-contribution loop is opt-in and data-safe by construction**: off by default; when you
+  enable it, an allowlist + a sensitive-path tripwire abort any push that would include `data/`,
+  `.env`, drafts, logs, screenshots or the DB.
 - **Dedup is permanent**, and daily caps + attempt limits are enforced and recorded.
 
 ---

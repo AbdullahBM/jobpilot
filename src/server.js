@@ -103,6 +103,13 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, cvPath: dest, size: file.buffer.length });
     }
 
+    // ── POST /api/consent → user opts in/out of auto-contribution ──────────────
+    if (req.method === 'POST' && url.pathname === '/api/consent') {
+      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      const saved = updateProfile({ consent: { autoContribute: !!body.autoContribute } });
+      return json(res, 200, { ok: true, consent: saved.consent });
+    }
+
     // ── GET /api/answers → open questions + learned answers ───────────────────
     if (req.method === 'GET' && url.pathname === '/api/answers') {
       const { initDB } = await import('./tracker.js');

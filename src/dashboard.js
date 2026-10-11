@@ -163,12 +163,18 @@ input.s{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10
 .loginbanner{background:#2a0a0a;border:1px solid #b91c1c;border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:14px;color:#fecaca}
 .loginbtn{display:inline-block;background:#ef4444;color:#fff;font-weight:700;padding:5px 14px;border-radius:7px;text-decoration:none;margin:0 4px}
 .loginbtn:hover{background:#dc2626}
+.consentbar{background:#0b1f17;border:1px solid #166534;border-radius:8px;padding:9px 14px;margin-bottom:12px;font-size:12.5px;color:#bbf7d0}
+.cbtn{border:none;border-radius:7px;padding:5px 12px;font-weight:700;cursor:pointer;margin-left:8px}
+.cbtn.on{background:#22c55e;color:#06240f}.cbtn.off{background:#334155;color:#e2e8f0}
 </style></head><body>
 <div class="hdr"><div><h1><span class="dot" style="background:${live ? '#22c55e' : '#ef4444'}"></span>Job Agent — ${esc(p.name || '')}</h1>
 <div class="dim">${live ? `Worker LIVE · ${esc(Object.entries(state.lanes || {}).map(([k, v]) => k + ':' + (v.phase || '')).join(' · ').slice(0, 160)) || esc(state.phase || '')} · beat ${Math.round(hb)}s ago` : 'Worker not running'} · ${new Date().toLocaleString('en-GB')} · auto-refresh 20s</div></div>
 <div style="text-align:right"><div class="kv" style="color:#60a5fa">${tot.jobs}</div><div class="dim">leads in bank</div></div></div>
 <div class="wrap">
 ${state.loginNeeded && Object.keys(state.loginNeeded).length ? Object.entries(state.loginNeeded).map(([site, info]) => `<div class="loginbanner">🔑 <b>${esc(site)} needs you to log in.</b> ${esc(info.reason || '')} &nbsp;→&nbsp; <a class="loginbtn" href="${esc(info.url)}" target="_blank" rel="noopener">Open ${esc(site)} &amp; log in ↗</a> <span class="dim">(in the JobPilot Chrome window — the agent resumes automatically once you're back in)</span></div>`).join('') : ''}
+<div class="consentbar">${p.consent?.autoContribute
+  ? `🧬 <b>Self-contribution: ON.</b> JobPilot may file blocker issues and push <i>code/doc</i> improvements to the public repo (never your data). <button class="cbtn off" onclick="consent(false)">Turn off</button>`
+  : `🧬 <b>Self-contribution: OFF.</b> JobPilot keeps every improvement local. Opt in to let it file issues &amp; push <i>code/doc</i> fixes back (hard-guarded — never your data/creds). <button class="cbtn on" onclick="consent(true)">Enable contributing back</button>`}</div>
 ${pend.length ? `<div class="qbanner">🧠 The agent needs <b>${pend.length}</b> answer${pend.length > 1 ? 's' : ''} from you to apply to more jobs → <a href="#tab-questions" onclick="tab('questions')" style="color:#fcd34d;text-decoration:underline">answer them in the Questions tab</a>. It remembers every answer forever.</div>` : ''}
 <div class="ks">
 ${kpi(today.found, 'New leads (24h)', '#60a5fa')}${kpi(today.emails, 'Emails sent (24h)', '#22c55e')}${kpi(today.easy, 'Easy Applies (24h)', '#3b82f6')}${kpi(today.forms, 'Forms submitted (24h)', '#06b6d4')}${kpi(today.connects, 'Connects (24h)', '#a855f7')}
@@ -219,6 +225,10 @@ async function ans(qkey, value){ if(!value){return}
   const btn = event&&event.target; if(btn){btn.disabled=true; btn.textContent='saving…';}
   try{ const r = await fetch(base+'/api/answers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qkey,answer:value})}); if(!r.ok) throw new Error('HTTP '+r.status); location.href = base + '/#tab-questions'; location.reload(); }
   catch(e){ if(btn){btn.disabled=false; btn.textContent='save';} alert('Could not save — is the worker/server running? Open the dashboard at '+base+' (not the file). Error: '+e.message) } }
+async function consent(on){
+  const base = (location.protocol==='file:'||!location.port) ? 'http://127.0.0.1:${UIPORT}' : '';
+  try{ const r = await fetch(base+'/api/consent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoContribute:on})}); if(!r.ok) throw new Error('HTTP '+r.status); location.reload(); }
+  catch(e){ alert('Could not update consent — open the dashboard at '+base+'. Error: '+e.message) } }
 tab((location.hash.match(/tab-(\\w+)/)||[])[1]||'easy_apply');
 </script></body></html>`;
   fs.writeFileSync(DASH, html, 'utf8');
