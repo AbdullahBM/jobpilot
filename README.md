@@ -16,6 +16,8 @@ its own fixes back to this repo.**
 
 ![JobPilot demo](docs/demo.gif)
 
+<sub>▶️ Full-quality demo video: [`docs/demo.mp4`](docs/demo.mp4)</sub>
+
 </div>
 
 ---
