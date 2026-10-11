@@ -35,6 +35,9 @@ const RUN_MS = +(process.env.RUN_MS || 0) || Infinity; // 0/absent = run forever
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 const jitter = ([a, b]) => SLEEP(a + Math.random() * (b - a));
 const STATE = path.join(DATA, 'worker-state.json');
+const STOPFILE = path.join(DATA, '.stop');          // UI/CLI writes this to halt all lanes
+const stopped = () => fs.existsSync(STOPFILE);
+const running = () => !stopped() && Date.now() - started < RUN_MS;
 const started = Date.now();
 let state = { startedAt: new Date().toISOString(), lanes: {}, cycle: 0 };
 function beat(lane, phase, extra = {}) {
@@ -80,31 +83,47 @@ function ingest(leads) {
 // ── SCOUT lane ────────────────────────────────────────────────────────────────
 async function scout() {
   let i = 0;
-  while (Date.now() - started < RUN_MS) {
+  while (running()) {
     try {
       const postQ = rankByUCB('post_query', buildQueries({ limit: 30 }));
       const jobQ = rankByUCB('job_query', buildListingQueries({ limit: 18 }));
+
+      // 1) LinkedIn hiring POSTS — primary source (highest email yield), every loop.
       const q = postQ[0];
       beat('scout', `LI posts: ${q}`);
       const r = await liPosts(q, { datePosted: 'past-24h' });
       if (r.ok) { const { n, email } = ingest(r.leads); outcome('post_query', q, { yieldN: email * 2 + n }); say('scout', `posts "${q}" +${n} (${email} email)`); clearLogin('LinkedIn'); }
       else if (notLoggedIn(r.detail)) flagLogin('LinkedIn', 'LinkedIn session expired while scraping posts');
       await jitter(PACE.scout);
+      if (!running()) break;
 
-      const jq = jobQ[0];
-      beat('scout', `LI jobs: ${jq}`);
-      for (const geoId of ['92000000', '101022442']) { // Worldwide, Pakistan
-        const rj = await liJobs(jq, { easyOnly: true, tpr: 86400, geoId, pages: 1 });
-        if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); }
-        await SLEEP(2500);
-      }
-      say('scout', `jobs "${jq}" done`);
+      // 2) The wider internet — HN, Reddit, public boards — EVERY loop (unbiased variety,
+      //    no LinkedIn dependence, mostly email/form leads). Rotate one web source per loop
+      //    so we cover all of them quickly without hammering any single site.
+      const web = [
+        ['HN', () => hnHiring({ maxAgeHours: 240 })],
+        ['Reddit', () => redditHiring()],
+        ['Boards', () => publicBoards({ maxAgeHours: 72 })],
+      ];
+      const [wname, wfn] = web[i % web.length];
+      beat('scout', 'web: ' + wname);
+      try { const rr = await wfn(); const { n, email } = ingest(rr.leads); say('scout', `${wname} +${n} (${email} email)`); } catch (e) { say('scout', `${wname} err ${e.message.slice(0, 60)}`); }
+      await jitter(PACE.scout);
+      if (!running()) break;
 
-      if (i % 4 === 3) { // web sweep every 4th loop
-        for (const [name, fn] of [['HN', () => hnHiring({ maxAgeHours: 240 })], ['Reddit', () => redditHiring()], ['Boards', () => publicBoards({ maxAgeHours: 72 })]]) {
-          beat('scout', 'web: ' + name);
-          try { const rr = await fn(); const { n, email } = ingest(rr.leads); say('scout', `${name} +${n} (${email} email)`); } catch (e) { say('scout', `${name} err ${e.message.slice(0, 60)}`); }
+      // 3) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
+      //    throttle risk; posts and the web carry the pipeline).
+      if (i % 2 === 0) {
+        const jq = jobQ[0];
+        beat('scout', `LI jobs: ${jq}`);
+        for (const geoId of ['92000000', '101022442']) { // Worldwide, Pakistan
+          const rj = await liJobs(jq, { easyOnly: true, tpr: 86400, geoId, pages: 1 });
+          if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); }
+          else if (notLoggedIn(rj.detail)) flagLogin('LinkedIn', 'LinkedIn session expired while scraping jobs');
+          await SLEEP(2500);
+          if (!running()) break;
         }
+        say('scout', `jobs "${jq}" done`);
       }
       i++;
       await jitter(PACE.scout);
@@ -114,7 +133,7 @@ async function scout() {
 
 // ── MAILER lane ────────────────────────────────────────────────────────────────
 async function mailer() {
-  while (Date.now() - started < RUN_MS) {
+  while (running()) {
     if (capLeft('email', 'email') <= 0) { beat('mailer', 'daily cap reached'); await SLEEP(10 * 60000); continue; }
     const j = queue('email', 12).find(j => !alreadyEmailed(j.email) && !alreadyApplied(j.company, j.role));
     if (!j) { beat('mailer', 'idle (queue empty)'); await SLEEP(30000); continue; }
@@ -141,7 +160,7 @@ let liCooldownUntil = 0;         // backoff when LinkedIn throttles
 let easyFailStreak = 0;          // consecutive non-apply Easy Apply outcomes
 async function applier() {
   let turn = 0;
-  while (Date.now() - started < RUN_MS) {
+  while (running()) {
     const liCooling = Date.now() < liCooldownUntil;
     // While LinkedIn is cooling down, only run the forms side (non-LinkedIn traffic).
     const doEasy = liCooling ? false : turn++ % 2 === 0;
@@ -205,7 +224,7 @@ async function applier() {
 // ── CONNECTOR lane ──────────────────────────────────────────────────────────────
 let connectPaused = false;
 async function connector() {
-  while (Date.now() - started < RUN_MS) {
+  while (running()) {
     if (connectPaused || capLeft('connect', 'connect') <= 0) { beat('connector', connectPaused ? 'paused (weekly limit)' : 'daily cap'); await SLEEP(15 * 60000); continue; }
     const j = queue('connect', 15).find(j => j.poster_url && !alreadyConnected(j.poster_url) && !alreadyApplied(j.company, j.role));
     if (!j) { beat('connector', 'idle (queue empty)'); await SLEEP(45000); continue; }
@@ -228,7 +247,7 @@ async function connector() {
 // ── dashboard + playbook + self-contribution refresher ──────────────────────────
 async function refresher() {
   let lastContribute = 0;
-  while (Date.now() - started < RUN_MS) {
+  while (running()) {
     try { writeDash(); writePlaybook(); } catch {}
     // Every ~20 min: contribute improvements back to the public repo (issues + allowlisted
     // code/doc changes). ON by default; hard-guarded against ever committing data/ or creds.
@@ -247,12 +266,16 @@ async function refresher() {
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
+try { fs.rmSync(STOPFILE, { force: true }); } catch {}   // clear any stale stop flag
 await launchChrome();
 await initDB();
-const uiPort = await startServer();           // dashboard + Questions + /api/answers + /evidence
+const uiPort = await startServer();           // dashboard + Questions + /api/answers + /evidence + /api/stop
 process.env.JOB_AGENT_PORT = String(uiPort || 7788);
 say('main', `worker start${DRY ? ' (DRY)' : ''} — concurrent lanes: scout · mailer · applier · connector`);
-say('main', `dashboard + Questions tab live at http://127.0.0.1:${uiPort || 7788}`);
+say('main', `dashboard + Stop button live at http://127.0.0.1:${uiPort || 7788}`);
 beat('main', 'running', { uiPort: uiPort || 7788 });
+// Watchdog: when the Stop flag appears (UI/CLI), exit the whole process promptly.
+(async () => { while (!stopped()) await SLEEP(1500); say('main', '⏹ Stop requested — shutting down all lanes'); beat('main', 'stopped'); await SLEEP(500); process.exit(0); })();
 await Promise.all([scout(), mailer(), applier(), connector(), refresher()]);
+beat('main', 'stopped');
 process.exit(0);

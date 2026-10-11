@@ -166,10 +166,13 @@ input.s{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10
 .consentbar{background:#0b1f17;border:1px solid #166534;border-radius:8px;padding:9px 14px;margin-bottom:12px;font-size:12.5px;color:#bbf7d0}
 .cbtn{border:none;border-radius:7px;padding:5px 12px;font-weight:700;cursor:pointer;margin-left:8px}
 .cbtn.on{background:#22c55e;color:#06240f}.cbtn.off{background:#334155;color:#e2e8f0}
+.stopbtn{margin-top:8px;background:#ef4444;color:#fff;border:none;border-radius:7px;padding:6px 14px;font-weight:700;cursor:pointer}
+.stopbtn:hover{background:#dc2626}
 </style></head><body>
 <div class="hdr"><div><h1><span class="dot" style="background:${live ? '#22c55e' : '#ef4444'}"></span>Job Agent — ${esc(p.name || '')}</h1>
 <div class="dim">${live ? `Worker LIVE · ${esc(Object.entries(state.lanes || {}).map(([k, v]) => k + ':' + (v.phase || '')).join(' · ').slice(0, 160)) || esc(state.phase || '')} · beat ${Math.round(hb)}s ago` : 'Worker not running'} · ${new Date().toLocaleString('en-GB')} · auto-refresh 20s</div></div>
-<div style="text-align:right"><div class="kv" style="color:#60a5fa">${tot.jobs}</div><div class="dim">leads in bank</div></div></div>
+<div style="text-align:right"><div class="kv" style="color:#60a5fa">${tot.jobs}</div><div class="dim">leads in bank</div>
+${live ? `<button class="stopbtn" onclick="stopAll()">⏹ Stop worker</button>` : ''}</div></div>
 <div class="wrap">
 ${state.loginNeeded && Object.keys(state.loginNeeded).length ? Object.entries(state.loginNeeded).map(([site, info]) => `<div class="loginbanner">🔑 <b>${esc(site)} needs you to log in.</b> ${esc(info.reason || '')} &nbsp;→&nbsp; <a class="loginbtn" href="${esc(info.url)}" target="_blank" rel="noopener">Open ${esc(site)} &amp; log in ↗</a> <span class="dim">(in the JobPilot Chrome window — the agent resumes automatically once you're back in)</span></div>`).join('') : ''}
 <div class="consentbar">${p.consent?.autoContribute
@@ -229,6 +232,12 @@ async function consent(on){
   const base = (location.protocol==='file:'||!location.port) ? 'http://127.0.0.1:${UIPORT}' : '';
   try{ const r = await fetch(base+'/api/consent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoContribute:on})}); if(!r.ok) throw new Error('HTTP '+r.status); location.reload(); }
   catch(e){ alert('Could not update consent — open the dashboard at '+base+'. Error: '+e.message) } }
+async function stopAll(){
+  if(!confirm('Stop the JobPilot worker? All four lanes halt within a few seconds. Your logged-in Chrome stays open.')) return;
+  const base = (location.protocol==='file:'||!location.port) ? 'http://127.0.0.1:${UIPORT}' : '';
+  const b=event&&event.target; if(b){b.disabled=true;b.textContent='Stopping…';}
+  try{ const r=await fetch(base+'/api/stop',{method:'POST'}); if(!r.ok) throw new Error('HTTP '+r.status); if(b)b.textContent='Stopped ✓'; }
+  catch(e){ if(b){b.disabled=false;b.textContent='⏹ Stop worker';} alert('Could not stop — open the dashboard at '+base+'. Error: '+e.message) } }
 tab((location.hash.match(/tab-(\\w+)/)||[])[1]||'easy_apply');
 </script></body></html>`;
   fs.writeFileSync(DASH, html, 'utf8');

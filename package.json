@@ -14,6 +14,7 @@
     "doctor": "node src/doctor.js",
     "dashboard": "node src/dashboard.js",
     "worker": "node src/worker.js",
+    "stop": "node scripts/stop.mjs",
     "test:browser": "node scripts/test-browser.mjs",
     "test:mcp": "node scripts/test-mcp.mjs"
   },

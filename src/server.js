@@ -103,6 +103,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, cvPath: dest, size: file.buffer.length });
     }
 
+    // ── POST /api/stop → halt the always-on worker (writes a flag the lanes honor) ─────
+    if (req.method === 'POST' && url.pathname === '/api/stop') {
+      try { fs.writeFileSync(path.join(DATA, '.stop'), new Date().toISOString()); } catch {}
+      return json(res, 200, { ok: true, detail: 'Stop requested — the worker will halt within a few seconds. Your logged-in Chrome stays open.' });
+    }
     // ── POST /api/consent → user opts in/out of auto-contribution ──────────────
     if (req.method === 'POST' && url.pathname === '/api/consent') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
