@@ -161,6 +161,11 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false }) {
       const main = (document.querySelector('main') || document.body).innerText;
       return { posted: (main.match(/(\d+\s+(minute|hour|day|week|month)s?\s+ago)/) || [])[1] || '', head: main.slice(0, 1500) };
     });
+    // LinkedIn anti-bot throttle: a security checkpoint / "unusual activity" / rate-limit page.
+    if (/security check|security verification|unusual activity|doing that too (much|often|fast)|try again later|rate limit|you.?ve reached|temporarily (restricted|blocked)|verify you.?re a human|captcha|\/checkpoint\//i.test(meta.head + ' ' + page.url())) {
+      await encounter('easy_apply', 'linkedin anti-bot throttle / checkpoint', { url, page });
+      await page.close(); return { ok: false, result: 'throttled', detail: 'LinkedIn security check / rate limit — backing off', meta };
+    }
     if (APPLIED_RE.test(meta.head)) { await page.close(); return { ok: true, result: 'already_applied', detail: 'LinkedIn shows already applied', meta }; }
     if (/no longer accepting applications/i.test(meta.head)) { await page.close(); return { ok: true, result: 'closed', detail: 'no longer accepting applications', meta }; }
 

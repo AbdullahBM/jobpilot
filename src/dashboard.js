@@ -160,11 +160,15 @@ input.s{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10
 .opt{background:#1e293b;color:#e2e8f0;border:1px solid #3b82f6;border-radius:6px;padding:4px 10px;margin:2px;cursor:pointer;font-weight:600}
 .opt:hover{background:#3b82f6}.ai{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:4px 8px;border-radius:6px;width:260px;margin-right:6px}
 .qbanner{background:#1a1407;border:1px solid #a16207;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#fcd34d}
+.loginbanner{background:#2a0a0a;border:1px solid #b91c1c;border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:14px;color:#fecaca}
+.loginbtn{display:inline-block;background:#ef4444;color:#fff;font-weight:700;padding:5px 14px;border-radius:7px;text-decoration:none;margin:0 4px}
+.loginbtn:hover{background:#dc2626}
 </style></head><body>
 <div class="hdr"><div><h1><span class="dot" style="background:${live ? '#22c55e' : '#ef4444'}"></span>Job Agent — ${esc(p.name || '')}</h1>
 <div class="dim">${live ? `Worker LIVE · ${esc(Object.entries(state.lanes || {}).map(([k, v]) => k + ':' + (v.phase || '')).join(' · ').slice(0, 160)) || esc(state.phase || '')} · beat ${Math.round(hb)}s ago` : 'Worker not running'} · ${new Date().toLocaleString('en-GB')} · auto-refresh 20s</div></div>
 <div style="text-align:right"><div class="kv" style="color:#60a5fa">${tot.jobs}</div><div class="dim">leads in bank</div></div></div>
 <div class="wrap">
+${state.loginNeeded && Object.keys(state.loginNeeded).length ? Object.entries(state.loginNeeded).map(([site, info]) => `<div class="loginbanner">🔑 <b>${esc(site)} needs you to log in.</b> ${esc(info.reason || '')} &nbsp;→&nbsp; <a class="loginbtn" href="${esc(info.url)}" target="_blank" rel="noopener">Open ${esc(site)} &amp; log in ↗</a> <span class="dim">(in the JobPilot Chrome window — the agent resumes automatically once you're back in)</span></div>`).join('') : ''}
 ${pend.length ? `<div class="qbanner">🧠 The agent needs <b>${pend.length}</b> answer${pend.length > 1 ? 's' : ''} from you to apply to more jobs → <a href="#tab-questions" onclick="tab('questions')" style="color:#fcd34d;text-decoration:underline">answer them in the Questions tab</a>. It remembers every answer forever.</div>` : ''}
 <div class="ks">
 ${kpi(today.found, 'New leads (24h)', '#60a5fa')}${kpi(today.emails, 'Emails sent (24h)', '#22c55e')}${kpi(today.easy, 'Easy Applies (24h)', '#3b82f6')}${kpi(today.forms, 'Forms submitted (24h)', '#06b6d4')}${kpi(today.connects, 'Connects (24h)', '#a855f7')}

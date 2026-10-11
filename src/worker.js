@@ -45,6 +45,17 @@ function beat(lane, phase, extra = {}) {
 }
 const say = (lane, m) => console.log(`[${new Date().toLocaleTimeString('en-GB')}] ${lane}: ${m}`);
 
+// When a site needs the user to (re)log in, surface a ONE-CLICK link on the dashboard.
+const LOGIN_URL = { LinkedIn: 'https://www.linkedin.com/login', Gmail: 'https://mail.google.com/' };
+function flagLogin(site, reason, url) {
+  state.loginNeeded = state.loginNeeded || {};
+  state.loginNeeded[site] = { url: url || LOGIN_URL[site] || '', reason: reason || '', ts: new Date().toISOString() };
+  say('main', `⚠ ${site} needs login — surfaced one-click link on dashboard (${state.loginNeeded[site].url})`);
+  beat('main', 'login-needed');
+}
+function clearLogin(site) { if (state.loginNeeded && state.loginNeeded[site]) { delete state.loginNeeded[site]; try { fs.writeFileSync(STATE, JSON.stringify(state)); } catch {} } }
+const notLoggedIn = d => /not logged in|log into|authwall|sign in|please log in/i.test(d || '');
+
 // ── queue selector (shared) ──────────────────────────────────────────────────
 function queue(channel, limit = 25) {
   const minPosted = new Date(Date.now() - MAX_AGE_DAYS[channel] * 86400e3).toISOString();
@@ -76,7 +87,8 @@ async function scout() {
       const q = postQ[0];
       beat('scout', `LI posts: ${q}`);
       const r = await liPosts(q, { datePosted: 'past-24h' });
-      if (r.ok) { const { n, email } = ingest(r.leads); outcome('post_query', q, { yieldN: email * 2 + n }); say('scout', `posts "${q}" +${n} (${email} email)`); }
+      if (r.ok) { const { n, email } = ingest(r.leads); outcome('post_query', q, { yieldN: email * 2 + n }); say('scout', `posts "${q}" +${n} (${email} email)`); clearLogin('LinkedIn'); }
+      else if (notLoggedIn(r.detail)) flagLogin('LinkedIn', 'LinkedIn session expired while scraping posts');
       await jitter(PACE.scout);
 
       const jq = jobQ[0];
@@ -113,7 +125,8 @@ async function mailer() {
     bumpAttempt(j.url);
     if (DRY) { say('mailer', `DRY → ${j.email}`); setStatus(j.url, 'emailed', 'DRY'); await jitter(PACE.mailer); continue; }
     const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: p.cvPath });
-    if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); }
+    if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
+    else if (notLoggedIn(r.detail)) flagLogin('Gmail', 'Gmail session expired — needed to send email');
     else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
     log('email_send', j.company, j.role, j.email, r.ok ? 'ok' : 'fail', r.detail);
     outcome('email_domain', (j.email.split('@')[1] || ''), { win: r.ok });
@@ -124,27 +137,44 @@ async function mailer() {
 }
 
 // ── APPLIER lane (Easy Apply + forms interleaved) ───────────────────────────────
+let liCooldownUntil = 0;         // backoff when LinkedIn throttles
+let easyFailStreak = 0;          // consecutive non-apply Easy Apply outcomes
 async function applier() {
   let turn = 0;
   while (Date.now() - started < RUN_MS) {
-    const doEasy = turn++ % 2 === 0;
+    const liCooling = Date.now() < liCooldownUntil;
+    // While LinkedIn is cooling down, only run the forms side (non-LinkedIn traffic).
+    const doEasy = liCooling ? false : turn++ % 2 === 0;
     const chan = doEasy ? 'easy_apply' : 'form';
     const capK = doEasy ? 'easy' : 'form', capType = doEasy ? 'li_easy_apply' : 'portal_apply';
     if (capLeft(capK, capType) <= 0) { await SLEEP(60000); continue; }
     const list = queue(chan, 15).filter(j => !alreadyApplied(j.company, j.role));
     const j = list.find(j => !learnedSkip('form_domain', domainOf(j.apply_url || j.url)));
-    if (!j) { beat('applier', `idle (${chan} queue empty)`); await SLEEP(12000); continue; }
+    if (!j) { beat('applier', `idle (${chan} queue empty)${liCooling ? ' · LinkedIn cooling down' : ''}`); await SLEEP(12000); continue; }
     bumpAttempt(j.url);
     if (DRY) { say('applier', `DRY ${chan} → ${j.role}`); setStatus(j.url, 'applied', 'DRY'); await jitter(PACE.applier); continue; }
     try {
       if (doEasy) {
         beat('applier', `⚡ ${j.role} @ ${j.company}`);
         const r = await easyApply({ url: j.apply_url || j.url });
-        if (r.result === 'applied' || r.result === 'already_applied') setStatus(j.url, 'applied', r.detail);
+        if (r.result === 'throttled') {
+          // LinkedIn is actively blocking — back off (grows with repeat hits); forms lane keeps working.
+          easyFailStreak++;
+          const mins = Math.min(60, 8 * easyFailStreak);
+          liCooldownUntil = Date.now() + mins * 60000;
+          say('applier', `🛑 LinkedIn throttle — cooling down ${mins} min`);
+          beat('applier', `LinkedIn cooldown ${mins}m`);
+          // a security checkpoint usually needs the human to re-verify / re-login
+          flagLogin('LinkedIn', 'LinkedIn security check — open LinkedIn and complete the check / re-login');
+          continue; // don't burn this lead's attempt on a throttle
+        }
+        if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; }
         else if (r.result === 'no_easy_apply') { if (r.externalUrl) setFields(j.url, { channel: 'form', apply_url: r.externalUrl }); else setStatus(j.url, 'skipped', 'no Easy Apply / external'); }
         else if (r.result === 'needs_answers') setStatus(j.url, 'needs_manual', r.detail);
         else if (r.result === 'closed') setStatus(j.url, 'skipped', 'closed');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
+        // repeated stuck/errors often mean soft-throttling → gentle cooldown
+        if (!['applied', 'already_applied'].includes(r.result)) { easyFailStreak++; if (easyFailStreak >= 4) { liCooldownUntil = Date.now() + 10 * 60000; say('applier', '🛑 4 Easy Apply misses in a row — 10 min cooldown'); easyFailStreak = 0; } }
         log('li_easy_apply', j.company, j.role, j.url, r.result === 'applied' ? 'ok' : /needs_answers/.test(r.result) ? 'manual' : /already|no_easy|closed/.test(r.result) ? 'skip' : 'fail', `${r.result}: ${r.detail}`);
         say('applier', `⚡ ${r.result} → ${j.role} @ ${j.company}`);
       } else {
@@ -189,10 +219,23 @@ async function connector() {
   }
 }
 
-// ── dashboard + playbook refresher ──────────────────────────────────────────────
+// ── dashboard + playbook + self-contribution refresher ──────────────────────────
 async function refresher() {
+  let lastContribute = 0;
   while (Date.now() - started < RUN_MS) {
     try { writeDash(); writePlaybook(); } catch {}
+    // Every ~20 min: contribute improvements back to the public repo (issues + allowlisted
+    // code/doc changes). Hard-guarded against ever committing data/ or credentials.
+    if (!DRY && Date.now() - lastContribute > 20 * 60000) {
+      lastContribute = Date.now();
+      try {
+        const { contributeRound } = await import('./contribute.js');
+        const r = await contributeRound();
+        if (r.issues?.filed?.length) say('contribute', `filed issues: ${r.issues.filed.join(', ')}`);
+        if (r.code?.pushed) say('contribute', `pushed improvements: ${r.code.files.join(', ')}`);
+        else if (r.code?.reason && r.code.reason !== 'nothing to contribute') say('contribute', r.code.reason);
+      } catch (e) { say('contribute', 'skip: ' + e.message.slice(0, 80)); }
+    }
     await SLEEP(20000);
   }
 }

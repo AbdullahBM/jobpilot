@@ -78,7 +78,10 @@ const TOOLS = [
         : needLogin.length
           ? `Please log into: ${needLogin.join(' + ')} in the debug Chrome window (open linkedin.com / mail.google.com, sign in), then continue.`
           : 'LinkedIn + Gmail sessions verified live.';
-      return ok({ chrome: cdp, loggedIn, needLogin, loginDetail: logins.detail, loginHint, profileGaps: profileGaps(), onboarded: isOnboarded(), onboardingUrl: `http://127.0.0.1:${PORT}/onboard`, openTabs: tabs.slice(0, 15) });
+      const LOGIN_URL = { linkedin: 'https://www.linkedin.com/login', gmail: 'https://mail.google.com/' };
+      // Hand the user ONE-CLICK links for exactly the sites that need a login.
+      const loginLinks = needLogin.map(s => ({ site: s, url: LOGIN_URL[s] }));
+      return ok({ chrome: cdp, loggedIn, needLogin, loginLinks, loginDetail: logins.detail, loginHint, profileGaps: profileGaps(), onboarded: isOnboarded(), onboardingUrl: `http://127.0.0.1:${PORT}/onboard`, openTabs: tabs.slice(0, 15) });
     },
   },
   {
@@ -410,6 +413,12 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
     handler: async () => { writePlaybook(); return ok({ encounters: openEncounters(40), questions: pendingQuestions(), learned: allAnswers().slice(0, 60), queries: strategyTable('post_query').slice(0, 20), formDomains: strategyTable('form_domain').slice(0, 20), playbook: 'data/evolution/PLAYBOOK.md' }); },
   },
+  {
+    name: 'contribute_improvements',
+    description: "Self-improving repo loop: file GitHub issues for recurring blockers in the evolution memory, then commit + push ALLOWLISTED code/doc changes (src/, docs/, scripts/, *.md, mcp-server.js, start.js, package.json) to the public repo. HARD-GUARDED: aborts if anything under data/, .env*, drafts/, applied/, logs/, screenshots, or the DB is ever staged — so personal data and credentials are never pushed. Commits are attributed to the repo owner. Call after you fix an encounter in code (resolve_encounter first).",
+    inputSchema: { type: 'object', properties: { message: { type: 'string', description: 'commit message' } } },
+    handler: async ({ message }) => { const { contributeRound } = await import('./src/contribute.js'); return ok(await contributeRound(message || undefined)); },
+  },
 ];
 
 // ── Server wiring ─────────────────────────────────────────────────────────────
@@ -436,7 +445,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Log to stderr (stdout is the MCP channel)
-  console.error(`[job-agent-mcp] ready — 25 tools over stdio · UI at http://127.0.0.1:${PORT}`);
+  console.error(`[job-agent-mcp] ready — ${TOOLS.length} tools over stdio · UI at http://127.0.0.1:${PORT}`);
 }
 
 main().catch(e => { console.error('FATAL:', e); process.exit(1); });

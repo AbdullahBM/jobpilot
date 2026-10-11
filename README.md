@@ -1,81 +1,100 @@
-# JobPilot 🧭
+<div align="center">
 
-**A self-evolving, agent-driven job hunter that lives in your own browser.**
+# 🧭 JobPilot
 
-JobPilot is an [MCP](https://modelcontextprotocol.io) server with **no LLM of its own** — *your*
-coding agent (Claude Code, Codex, Kiro, Crew, Grok CLI, …) is the brain. You point it at JobPilot
-and say *“find and apply to AI jobs.”* The agent reasons; JobPilot provides the **hands** (it drives
-*your* logged-in Chrome), the **memory** (a dedup database so you never double-apply), and a
-**nervous system** that *learns from every failure and gets better on its own.*
+### The self-evolving, agent-driven job hunter that lives in *your* browser.
 
-It applies through **four channels** — email, LinkedIn Easy Apply, external ATS forms
-(Greenhouse / Lever / Ashby / Workable), and LinkedIn connection requests — always **freshest jobs
-first**. No API keys. No SMTP passwords. No scraping someone else’s data — it uses *your* real
-LinkedIn and Gmail sessions, locally.
+**Bring your own AI coding agent as the brain. JobPilot is the hands, the memory, and the
+nervous system — it applies for you across four channels, learns from every failure, and ships
+its own fixes back to this repo.**
 
-> 🎥 **Demo:** [`docs/demo.mp4`](docs/demo.mp4)
+[![MIT License](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/protocol-MCP-3b82f6.svg)](https://modelcontextprotocol.io)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933.svg)](https://nodejs.org)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-a855f7.svg)](CONTRIBUTING.md)
+[![Self-evolving](https://img.shields.io/badge/%F0%9F%A7%AC-self--evolving-f59e0b.svg)](#-the-self-evolution-loop)
+
+![JobPilot demo](docs/demo.gif)
+
+</div>
 
 ---
 
-## Why JobPilot is different
+## 💡 What is this?
 
-| Most job bots | JobPilot |
+JobPilot is an [MCP](https://modelcontextprotocol.io) server with **no LLM of its own**. *Your*
+coding agent — Claude Code, Codex, Kiro, Crew, Grok CLI — is the brain. You point it at JobPilot
+and say *“find and apply to AI jobs.”*
+
+The agent reasons. JobPilot provides:
+
+- **🖐 Hands** — it drives *your* already-logged-in Chrome (LinkedIn, Gmail, ATS) over the DevTools protocol.
+- **🧠 Memory** — a local dedup database so you never double-apply, across runs or agents.
+- **🧬 A nervous system** — it records every failure, *learns from it*, and gets measurably better each session.
+
+No API keys. No SMTP passwords. No scraping of other people's data. Your sessions, your machine, your data.
+
+---
+
+## ⚡ What it actually does — four channels, freshest-first
+
+| Channel | What happens |
 |---|---|
-| Ship their own brittle LLM prompts | **Agent-agnostic** — bring any MCP coding agent as the brain |
-| One channel (usually just Easy Apply) | **Four channels**: email · Easy Apply · ATS forms · connect+note |
-| Hard-code answers, break on new questions | **Self-evolving memory** — harvests your real answers, learns new ones, asks you *once* |
-| Fail silently | **Encounter log** with screenshots + HTML snapshots your agent reads to *fix its own code* |
-| Spam everything | **Dedup DB** + daily caps + relevance scoring, **freshest-posted first** |
-| Need API keys / a second browser | **Your** Chrome, **your** logins, **your** Gmail — nothing leaves your machine |
+| ✉️ **Email** | Finds hiring emails in LinkedIn posts, HN "Who is hiring", Reddit & boards → sends a tailored email from **your Gmail**, CV auto-attached & verified. |
+| ⚡ **LinkedIn Easy Apply** | Walks the multi-page modal, answers every question, uploads your CV, and **verifies "Application submitted."** |
+| 📋 **External ATS forms** | Greenhouse · Lever · Ashby · Workable — resolves job-board links to the real ATS, fills react-selects / radios / consent, submits, confirms. |
+| 🔗 **LinkedIn connect + note** | When there's no email/form, sends the poster a personalized connection request. |
 
-### The self-evolution loop — the core idea
-
-Every time JobPilot hits something it can’t handle — a weird Easy Apply question, a form with no
-submit button, a login-gated ATS — it records an **encounter**: a normalized signature, a count, and
-a saved **screenshot + HTML snapshot** under `data/evolution/`. It also:
-
-- **harvests** the answers you’ve already filled on LinkedIn (your real years-of-experience, salary,
-  work-authorization answers) and reuses them everywhere;
-- turns anything it genuinely can’t infer into a **“question for you”**, asked **once** in the
-  dashboard and then remembered forever;
-- tracks which **search queries and ATS domains** actually convert, and reweights itself (UCB bandit)
-  toward what works while auto-skipping dead ends.
-
-Your coding agent reads the auto-generated `data/evolution/PLAYBOOK.md`, patches the relevant module,
-and marks the encounter fixed. **The tool literally improves itself, session over session.**
+Everything is ordered **newest-posted first** — because the first applicant gets read.
 
 ---
 
-## How it works
+## 🧬 The self-evolution loop
 
-```
-Your coding agent (Claude Code / Codex / Kiro / Crew / Grok)   ← the LLM brain
-            │  speaks MCP (stdio)
-            ▼
-      JobPilot  (this server)                                  ← hands + memory + evolution
-            │  Playwright over CDP (port 9222)
-            ▼
-      YOUR Chrome  (logged into LinkedIn / Gmail / ATS)
-```
+This is what makes JobPilot different from every other job bot.
 
-Or skip the conversation entirely and run the **always-on worker**, which drives all four channels
-concurrently and never stops improving:
+Every time it hits something it can't handle — a weird Easy Apply question, a form with no submit
+button, a login-gated ATS — it records an **encounter**: a normalized signature, a running count,
+and a saved **screenshot + HTML snapshot** under `data/evolution/`. Then it:
 
-```bash
-npm run worker
-```
+1. **🪄 Harvests** the answers you've *already* filled on LinkedIn (your real years-of-experience,
+   salary, work-authorization) and reuses them everywhere.
+2. **🙋 Asks you once.** Anything it genuinely can't infer becomes a *“question for you”* in the
+   dashboard — answer it one time, remembered forever (fuzzy-matched across all future applications).
+3. **📈 Reweights itself.** It tracks which search queries and ATS domains actually convert and
+   shifts toward what works (UCB bandit), auto-skipping dead ends.
+4. **🔁 Contributes back.** It files GitHub issues for blockers it discovers and pushes code/doc
+   improvements to this repo — **automatically, attributed to you, never leaking your data.**
+
+> Your coding agent reads the auto-generated `data/evolution/PLAYBOOK.md`, patches the relevant
+> module, marks the encounter fixed — and the fix is pushed back for everyone. **The repository
+> literally improves itself, session over session.**
+
+---
+
+## 🏆 What's been achieved
+
+- **All four channels working end-to-end** against the live 2026 LinkedIn / ATS DOM — including the
+  shadow-DOM Easy Apply modal and the "Connect is hidden under the More menu" profile layout.
+- **A real answer engine** that harvests your prefilled answers, converts currencies/periods for
+  salary questions, handles yes/no work-authorization logic, and escalates the truly-unknown to you.
+- **A concurrent worker** — scout · mailer · applier · connector run in parallel lanes, so scraping
+  never blocks applying and email never blocks Easy Apply.
+- **A pipeline dashboard** with per-lane live status, a 🧠 Questions tab, and a 🧬 Evolution tab that
+  shows every blocker with its screenshot + HTML snapshot.
+- **Zero personal data in the codebase** — everything about you lives in `data/` (gitignored).
 
 ---
 
 ## 🚀 Getting started (zero human setup)
 
-You do **not** install anything by hand. Clone the repo, add **one** entry to your agent’s MCP
-config, and talk to your agent — it installs dependencies, launches your Chrome with the debug port,
-and checks your logins through the bootstrap launcher (`start.js`).
+You don't install anything by hand. Clone the repo, add **one** entry to your agent's MCP config,
+and talk to your agent — it self-installs, launches your Chrome with the debug port, and checks
+your logins through the bootstrap launcher (`start.js`).
 
 ### 1. Point your agent at JobPilot
 
-**Claude Code / Claude Desktop** — `.mcp.json` or `claude_desktop_config.json`:
+**Claude Code / Claude Desktop** — `.mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -91,59 +110,57 @@ command = "node"
 args = ["ABSOLUTE/PATH/TO/start.js"]
 ```
 
-**Kiro / Crew / any MCP client** — add an stdio server with `command: node`,
+**Kiro / Crew / any MCP client** — add an stdio server: `command: node`,
 `args: ["ABSOLUTE/PATH/TO/start.js"]`.
 
-> Point at **`start.js`**, not `mcp-server.js`. `start.js` self-installs dependencies on first run,
-> launches your Chrome with the debug port + session restore, then starts the server.
+> Point at **`start.js`**, not `mcp-server.js`. It self-installs dependencies on first run,
+> relaunches Chrome with the debug port + session restore, then starts the server.
 
 ### 2. Just talk to your agent
 
 > *“find and apply to AI jobs”*
 
-The agent (guided by [`AGENTS.md`](AGENTS.md)) will:
-1. check setup (`onboard_status`);
-2. launch your Chrome if needed (`launch_chrome`) — it relaunches Chrome with the debug port and
-   restores your tabs/logins, so LinkedIn and Gmail come back automatically;
-3. open a local **setup form** (`open_onboarding` → `http://127.0.0.1:7788/onboard`) where you
-   **drag-and-drop your CV** and **paste your links/roles** — never type a file path in chat;
-4. scrape, dedup, email, and apply — reporting live on the dashboard.
+The agent (guided by [`AGENTS.md`](AGENTS.md)) checks setup, launches your Chrome, opens a local
+**setup form** where you drag-and-drop your CV and paste your links/roles (never a file path in
+chat), then scrapes, dedups, emails and applies — reporting live on the dashboard.
 
-### 3. The setup form evolves with you
+### 3. Or run the always-on engine
 
-The only thing ever asked of you: fill the setup form once (CV + links + target roles). After that,
-JobPilot keeps learning — the dashboard’s **🧠 Questions** tab surfaces any application question it
-couldn’t answer; you answer it once, in the browser, and it’s reused on every future application.
+```bash
+npm run worker
+```
+
+Four concurrent lanes, freshest-first, self-evolving, with the dashboard + Questions tab live at
+**http://127.0.0.1:7788**. Flags: `DRY=1` (scrape only), `RUN_MS=<ms>` (time-box).
 
 ---
 
-## The dashboard
+## 📊 The dashboard
 
-A local-only UI at **`http://127.0.0.1:7788`** (bound to localhost):
+A local-only UI at **http://127.0.0.1:7788** (bound to localhost):
 
-- **Pipeline view** — fresh email leads first, then per-channel queues (Easy Apply · Forms · Connect),
-  all **newest-posted first**, with a live per-lane worker status.
-- **🧠 Questions** — answer anything the agent couldn’t, inline. Remembered forever.
-- **🧬 Evolution** — every open encounter with its screenshot + HTML snapshot, plus the growing table
-  of learned answers.
+- **Pipeline** — fresh email leads first, then per-channel queues, newest-posted first, with live per-lane status.
+- **🧠 Questions** — answer anything the agent couldn't, inline. Remembered forever.
+- **🧬 Evolution** — every open encounter with its screenshot + HTML snapshot, plus the learned-answers table.
 - **Done log / Emails sent / Connects** — a full audit trail with over-contact warnings.
 
 ---
 
-## Manual commands (optional)
+## 🧱 Known blockers (help wanted!)
 
-```bash
-npm run worker        # the always-on, four-lane, self-evolving engine
-npm run doctor        # health check — what's ready, what's left
-npm start             # run the bootstrap + MCP server by hand
-npm run dashboard     # regenerate + open the dashboard
-```
+Some sites actively fight automation or gate applications behind accounts. JobPilot handles these
+gracefully (routes the lead elsewhere / asks you) and we track them as open issues:
 
-Worker env flags: `DRY=1` (scrape only, don’t send), `RUN_MS=<ms>` (time-box a run).
+- **Indeed** — anti-bot / login wall ([#1](https://github.com/maazbin/jobpilot/issues/1))
+- **Glassdoor** — login + anti-bot wall ([#2](https://github.com/maazbin/jobpilot/issues/2))
+- **Workday / iCIMS / Taleo / SuccessFactors** — account-gated multi-step ATS ([#3](https://github.com/maazbin/jobpilot/issues/3))
+- **Job-board redirects** (Arbeitnow / WeWorkRemotely / Himalayas) ([#4](https://github.com/maazbin/jobpilot/issues/4))
+
+Want to knock one out? See [CONTRIBUTING.md](CONTRIBUTING.md) — these make great first PRs.
 
 ---
 
-## Project structure
+## 🗂 Project structure
 
 ```
 jobpilot/
@@ -153,44 +170,35 @@ jobpilot/
 ├── src/
 │   ├── worker.js           # always-on engine: scout · mailer · applier · connector (concurrent)
 │   ├── evolve.js           # self-evolution memory: encounters · learned answers · strategy bandit
-│   ├── profile.js          # personalization (CV, links, roles, salary, work-auth) — read from data/
+│   ├── contribute.js       # self-improving loop: files issues + pushes fixes (data-safe)
+│   ├── profile.js          # personalization — read from data/ (gitignored)
 │   ├── tracker.js          # jobs DB + dedup guards + channel queues
-│   ├── dashboard.js        # the pipeline + Questions + Evolution dashboard
-│   ├── server.js           # local web server: onboarding form, dashboard, /api/answers, /evidence
-│   ├── mcp/
-│   │   ├── sources.js      # freshest-first lead sources (LinkedIn posts/jobs, HN, Reddit, boards)
-│   │   ├── easyapply.js    # LinkedIn Easy Apply (harvests + answers + verifies)
-│   │   ├── forms.js        # external ATS forms (resolves job-board → real ATS)
-│   │   ├── connect.js      # connection request + personalized note
-│   │   ├── answers.js      # profile-driven answer engine (+ learned memory)
-│   │   ├── gmail.js        # send via the user's logged-in Gmail (CV auto-attached, verified)
-│   │   └── chrome.js       # launch Chrome with the debug port on demand
-│   └── agent/browser.js    # single CDP connection to your Chrome
+│   ├── dashboard.js        # pipeline + Questions + Evolution dashboard
+│   ├── server.js           # local web server: onboarding, dashboard, /api/answers, /evidence
+│   └── mcp/                # sources · easyapply · forms · connect · answers · gmail · chrome
 ├── data/                   # EVERYTHING personal lives here — gitignored
-│   ├── profile.json  jobs.db  uploads/  evolution/  chrome-debug-profile/
-└── docs/demo.mp4
+└── docs/demo.gif
 ```
 
 ---
 
-## Privacy & safety
+## 🔒 Privacy & safety
 
 - **Your data never leaves your machine.** Profile, CV, scraped jobs, dedup history, harvested
   answers, and the logged-in Chrome profile all live under `data/`, which is **gitignored**.
-- **No credentials in code.** No API keys, no SMTP passwords — JobPilot uses your existing browser
-  sessions.
-- **Dedup is permanent.** `data/jobs.db` means you never re-email, re-apply, or re-connect across
-  runs or across different agents.
-- **Caps & attempt limits** are enforced and recorded.
+- **No credentials in code.** JobPilot uses your existing browser sessions — no API keys, no SMTP.
+- **The self-contribution loop is data-safe by construction**: an allowlist + a sensitive-path
+  tripwire abort any push that would include `data/`, `.env`, drafts, logs, screenshots or the DB.
+- **Dedup is permanent**, and daily caps + attempt limits are enforced and recorded.
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
-Issues and pull requests are very welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Good first
-contributions: new ATS adapters in `src/mcp/forms.js`, new lead sources in `src/mcp/sources.js`, and
-resilience fixes driven by the encounters in your own `data/evolution/PLAYBOOK.md`.
+Issues and PRs are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Great first contributions:
+a new ATS adapter in `src/mcp/forms.js`, a new lead source in `src/mcp/sources.js`, or a resilience
+fix driven by a real encounter in `data/evolution/PLAYBOOK.md`.
 
-## License
+## 📄 License
 
-[MIT](LICENSE) © JobPilot contributors.
+[MIT](LICENSE) © [maazbin](https://github.com/maazbin) and JobPilot contributors.

@@ -48,6 +48,13 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
 3. **Clear pending questions.** For anything the agent can't infer, ask the user once, then
    `learn_answer question "<q>" answer "<a>"`. It's reused (fuzzy-matched) on every future
    application. The agent also **auto-harvests** the user's own prefilled LinkedIn answers.
+4. **Contribute back.** Push your improvements to the public repo so everyone benefits:
+   - `contribute_improvements` commits + pushes **allowlisted code/doc changes** (src/, docs, *.md)
+     and files GitHub issues for recurring blockers. It is **hard-guarded** — it aborts if anything
+     under `data/`, `.env*`, drafts, logs, screenshots, or the DB is ever staged. Commits are
+     attributed to the repo owner. The always-on worker runs this automatically every ~20 min.
+   - When you fix an encounter in code, `resolve_encounter` it, then let the contribute step push
+     the fix. File an issue for anything you can't fix so it's tracked.
 
 ## Rules
 
