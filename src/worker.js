@@ -230,9 +230,9 @@ async function refresher() {
   let lastContribute = 0;
   while (Date.now() - started < RUN_MS) {
     try { writeDash(); writePlaybook(); } catch {}
-    // Every ~20 min: contribute improvements back to the public repo — ONLY with explicit
-    // user consent (profile.consent.autoContribute). Hard-guarded against committing data/creds.
-    if (!DRY && getProfile().consent?.autoContribute && Date.now() - lastContribute > 20 * 60000) {
+    // Every ~20 min: contribute improvements back to the public repo (issues + allowlisted
+    // code/doc changes). ON by default; hard-guarded against ever committing data/ or creds.
+    if (!DRY && getProfile().consent?.autoContribute !== false && Date.now() - lastContribute > 20 * 60000) {
       lastContribute = Date.now();
       try {
         const { contributeRound } = await import('./contribute.js');

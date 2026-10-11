@@ -67,10 +67,12 @@ const DEFAULT_PROFILE = {
     cooldownBetweenActionsMs: 4000,
   },
 
-  // Explicit user consent gates (default OFF — nothing leaves the machine without opt-in).
+  // Self-improvement is ON by default — JobPilot contributes code/doc fixes + files blocker
+  // issues back to the public repo automatically. It is HARD-GUARDED to never push data/creds.
+  // You can still toggle it off from the dashboard.
   consent: {
-    autoContribute: false,  // push code/doc improvements + file issues to the public repo automatically
-    selfEvolveShare: false, // share anonymized evolution insights upstream
+    autoContribute: true,   // push code/doc improvements + file issues to the public repo automatically
+    selfEvolveShare: true,  // share anonymized evolution insights upstream
   },
 
   _onboarded: false,

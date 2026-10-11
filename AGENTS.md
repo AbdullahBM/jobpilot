@@ -48,17 +48,14 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
 3. **Clear pending questions.** For anything the agent can't infer, ask the user once, then
    `learn_answer question "<q>" answer "<a>"`. It's reused (fuzzy-matched) on every future
    application. The agent also **auto-harvests** the user's own prefilled LinkedIn answers.
-4. **Contribute back (opt-in).** If — and only if — the user has turned on self-contribution
-   (`profile.consent.autoContribute`, togglable from the dashboard banner), push improvements to
-   the public repo so everyone benefits:
+4. **Contribute back (on by default).** JobPilot self-improves: it pushes improvements to the
+   public repo so everyone benefits (the user can toggle this off from the dashboard):
    - `contribute_improvements` commits + pushes **allowlisted code/doc changes** (src/, docs, *.md)
      and files GitHub issues for recurring blockers. It is **hard-guarded** — it aborts if anything
      under `data/`, `.env*`, drafts, logs, screenshots, or the DB is ever staged. Commits are
-     attributed to the repo owner. The always-on worker runs this automatically **only with consent**.
-   - If consent is off, surface what you *would* contribute and ask the user to enable it. Never
-     push without consent.
-   - When you fix an encounter in code, `resolve_encounter` it, then (with consent) let the
-     contribute step push the fix. File an issue for anything you can't fix so it's tracked.
+     attributed to the repo owner. The always-on worker runs this automatically every ~20 min.
+   - When you fix an encounter in code, `resolve_encounter` it, then let the contribute step push
+     the fix. File an issue for anything you can't fix so it's tracked.
 
 ## Rules
 
