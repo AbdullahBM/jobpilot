@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "jobpilot": {
+      "command": "node",
+      "args": ["start.js"],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}

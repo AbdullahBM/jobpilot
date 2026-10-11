@@ -89,52 +89,67 @@ and a saved **screenshot + HTML snapshot** under `data/evolution/`. Then it:
 
 ---
 
-## 🚀 Getting started (zero human setup)
+## 🚀 Getting started (clone → tell your agent → done)
 
-You don't install anything by hand. Clone the repo, add **one** entry to your agent's MCP config,
-and talk to your agent — it self-installs, launches your Chrome with the debug port, and checks
-your logins through the bootstrap launcher (`start.js`).
+JobPilot ships with ready-made MCP config for every popular agent, so there's **nothing to wire up
+by hand** — no absolute paths, no JSON surgery.
 
-### 1. Point your agent at JobPilot
+### 1. Clone
 
-**Claude Code / Claude Desktop** — `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "jobpilot": { "command": "node", "args": ["ABSOLUTE/PATH/TO/start.js"] }
-  }
-}
+```bash
+git clone https://github.com/maazbin/jobpilot
+cd jobpilot
 ```
 
-**Codex CLI** — `~/.codex/config.toml`:
-```toml
-[mcp_servers.jobpilot]
-command = "node"
-args = ["ABSOLUTE/PATH/TO/start.js"]
-```
-
-**Kiro / Crew / any MCP client** — add an stdio server: `command: node`,
-`args: ["ABSOLUTE/PATH/TO/start.js"]`.
-
-> Point at **`start.js`**, not `mcp-server.js`. It self-installs dependencies on first run,
-> relaunches Chrome with the debug port + session restore, then starts the server.
-
-### 2. Just talk to your agent
+### 2. Open the folder in your agent and just talk to it
 
 > *“find and apply to AI jobs”*
 
-The agent (guided by [`AGENTS.md`](AGENTS.md)) checks setup, launches your Chrome, opens a local
-**setup form** where you drag-and-drop your CV and paste your links/roles (never a file path in
-chat), then scrapes, dedups, emails and applies — reporting live on the dashboard.
+Because the repo already contains the config your agent looks for, it **auto-discovers** the
+`jobpilot` MCP server and launches it via `start.js` — which self-installs dependencies on first
+run, relaunches your Chrome with the debug port + session restore, and starts the server. You may
+get a one-time "approve this MCP server?" prompt — say yes.
 
-### 3. Or run the always-on engine
+| Agent | What's already in the repo | You do |
+|---|---|---|
+| **Claude Code** | `.mcp.json` | open the folder, approve the server |
+| **Cursor** | `.cursor/mcp.json` | open the folder, enable it in Settings → MCP |
+| **Kiro** | `.kiro/settings/mcp.json` | open the folder — it's picked up automatically |
+| **VS Code / Copilot** | `.vscode/mcp.json` | open the folder, click **Start** on the server |
+| **Gemini CLI** | `.gemini/settings.json` | run `gemini` from the folder |
+| **Codex CLI** | `.codex/config.toml` | `export CODEX_HOME="$(pwd)/.codex"` then run `codex` (TOML, not JSON) |
 
-```bash
-npm run worker
+> All configs use a **relative** `node start.js`, so they work no matter where you cloned the repo —
+> as long as you open/run the agent from the repo folder. Claude Desktop and Windsurf use a global
+> config file; copy the block from `.mcp.json` into theirs (see below).
+
+<details><summary>Manual / global clients (Claude Desktop, Windsurf)</summary>
+
+**Claude Desktop** — add to `claude_desktop_config.json` (use the absolute path to `start.js`):
+```json
+{ "mcpServers": { "jobpilot": { "command": "node", "args": ["ABSOLUTE/PATH/TO/start.js"] } } }
 ```
 
-Four concurrent lanes, freshest-first, self-evolving, with the dashboard + Questions tab live at
-**http://127.0.0.1:7788**. Flags: `DRY=1` (scrape only), `RUN_MS=<ms>` (time-box).
+**Windsurf** — add the same block to `~/.codeium/windsurf/mcp_config.json`.
+</details>
+
+### 3. The agent takes it from here
+
+Guided by [`AGENTS.md`](AGENTS.md), it checks setup (`onboard_status`), launches your Chrome
+(`launch_chrome`, restoring your tabs/logins), opens a local **setup form** where you drag-and-drop
+your CV and paste your links/roles (never a file path in chat), then scrapes, dedups, emails, and
+applies — reporting live on the dashboard. If a login ever lapses, it shows a one-click
+"log in here" link.
+
+### Prefer the always-on engine? Skip the agent entirely:
+
+```bash
+npm install && npm run worker
+```
+
+Four concurrent lanes, freshest-first, self-evolving, with the dashboard + Questions tab + a
+**⏹ Stop** button live at **http://127.0.0.1:7788**. Flags: `DRY=1` (scrape only), `RUN_MS=<ms>`
+(time-box). Stop it anytime with the dashboard button or `npm run stop`.
 
 ---
 

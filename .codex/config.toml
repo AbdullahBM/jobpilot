@@ -1,0 +1,6 @@
+# Codex CLI reads TOML (not JSON). Codex loads this per-project block when CODEX_HOME points at
+# this .codex folder, or copy the block below into ~/.codex/config.toml.
+#   export CODEX_HOME="$(pwd)/.codex"   # then run: codex
+[mcp_servers.jobpilot]
+command = "node"
+args = ["start.js"]
