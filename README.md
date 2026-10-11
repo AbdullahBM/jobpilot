@@ -75,6 +75,34 @@ and a saved **screenshot + HTML snapshot** under `data/evolution/`. Then it:
 
 ---
 
+## 🙋 You're always in the loop (it never guesses the things that matter)
+
+JobPilot does **not** invent answers to questions like salary, visa/work-authorization, or notice
+period. Here's exactly how an application question gets answered, in order:
+
+1. **From the post + your profile.** Most screening questions are already answered by what you gave
+   it (years of experience, location, links, salary expectation) or stated in the job post itself.
+2. **Harvested from your own LinkedIn.** It reuses the answers you've *already* filled on past
+   Easy Apply forms — your real numbers, not a model's guess.
+3. **It asks you — once.** Anything it genuinely can't infer becomes a **question for you** in the
+   dashboard's 🧠 **Questions** tab. You answer it one time; it's stored and **reused on every
+   future application** (and fuzzy-matched, so a reworded version of the same question still hits).
+   Nothing is submitted on a required field it had to guess.
+
+```
+unknown question ─▶ parked in the Questions tab ─▶ you answer once ─▶ remembered forever
+                                                                      (reused + fuzzy-matched)
+```
+
+So salary and work-authorization are exactly the things a **person** decides — the agent surfaces
+them to you and remembers your call. If a login ever lapses mid-run, you get the same treatment: a
+one-click "log in here" banner, and it resumes automatically once you're back in.
+
+> Verify it yourself: `node scripts/verify-loop.mjs` walks an unknown question through
+> park → answer-once → reuse → fuzzy-match.
+
+---
+
 ## 🏆 What's been achieved
 
 - **All four channels working end-to-end** against the live 2026 LinkedIn / ATS DOM — including the
