@@ -1,0 +1,39 @@
+# ── Secrets & ALL personal data — NEVER commit ───────────────────────────────
+.env
+.env.*
+!.env.example
+# The entire data/ dir is per-user and private: CV, profile, scraped jobs, dedup
+# history, the logged-in Chrome profile, harvested answers, evolution snapshots.
+data/
+
+# ── Generated output ──────────────────────────────────────────────────────────
+dashboard.html
+# application screenshots
+applied/
+# email drafts
+drafts/
+logs/
+*.log
+
+# ── Dev scratch that can leak the user's screen (LinkedIn/Gmail) ──────────────
+scripts/*.png
+scripts/*.html
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ── Python / misc leftovers ───────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+uv.lock
+
+# ── Demo media IS shipped (README references it): docs/demo.* kept on purpose ──
+!docs/

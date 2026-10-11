@@ -1,0 +1,26 @@
+{
+  "name": "jobpilot",
+  "version": "3.0.0",
+  "description": "JobPilot — a self-evolving, agent-driven job hunter. An MCP server with no LLM of its own: your coding agent (Claude Code, Codex, Kiro, Crew, Grok) is the brain. Drives YOUR logged-in Chrome to apply via email, LinkedIn Easy Apply, external ATS forms, and connection requests. Learns from every failure.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "jobpilot": "./start.js"
+  },
+  "scripts": {
+    "start": "node start.js",
+    "mcp": "node start.js",
+    "server": "node mcp-server.js",
+    "doctor": "node src/doctor.js",
+    "dashboard": "node src/dashboard.js",
+    "worker": "node src/worker.js",
+    "test:browser": "node scripts/test-browser.mjs",
+    "test:mcp": "node scripts/test-mcp.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "node-fetch": "3.3.2",
+    "playwright": "1.49.0",
+    "sql.js": "1.12.0"
+  }
+}
