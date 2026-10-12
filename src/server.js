@@ -117,16 +117,18 @@ const server = http.createServer(async (req, res) => {
 
     // ── GET /api/answers → open questions + learned answers ───────────────────
     if (req.method === 'GET' && url.pathname === '/api/answers') {
-      const { initDB } = await import('./tracker.js');
+      const { initDB, reloadIfChanged } = await import('./tracker.js');
       await initDB();
+      await reloadIfChanged();                 // pick up questions parked by the worker/agent process
       const { pendingQuestions, allAnswers } = await import('./evolve.js');
       return json(res, 200, { pending: pendingQuestions(), learned: allAnswers() });
     }
 
     // ── POST /api/answers → user teaches an answer (clears the pending question) ─
     if (req.method === 'POST' && url.pathname === '/api/answers') {
-      const { initDB } = await import('./tracker.js');
+      const { initDB, reloadIfChanged } = await import('./tracker.js');
       await initDB();
+      await reloadIfChanged();                 // work from the latest on-disk DB before writing
       const { learn, answerByKey } = await import('./evolve.js');
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
       if (!body.answer) return json(res, 400, { ok: false, error: 'answer required' });
