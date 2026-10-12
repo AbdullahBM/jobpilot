@@ -94,11 +94,25 @@ async function main() {
   ensureDeps();
   await ensureChrome();
   log('Starting MCP server …');
-  // Replace this process with the server, inheriting stdin/stdout (the MCP channel)
-  const srv = spawn('node', [path.join(__dir, 'mcp-server.js')], {
-    cwd: __dir, stdio: ['inherit', 'inherit', 'inherit'],
-  });
-  srv.on('exit', code => process.exit(code ?? 0));
+
+  // NEVER STOP: supervise the MCP server. A clean exit (code 0 — the agent closed the
+  // connection) ends normally; a CRASH (non-zero / signal) is auto-restarted with backoff
+  // so the server is never left down while the agent/CLI is still using it.
+  let restarts = 0;
+  const startServer = () => {
+    const srv = spawn('node', [path.join(__dir, 'mcp-server.js')], {
+      cwd: __dir, stdio: ['inherit', 'inherit', 'inherit'],
+    });
+    srv.on('exit', (code, signal) => {
+      if (code === 0) { process.exit(0); return; }            // clean shutdown — honor it
+      restarts++;
+      if (restarts > 20) { log(`MCP server crashed ${restarts}× — giving up.`); process.exit(code ?? 1); return; }
+      const wait = Math.min(30000, 2000 * restarts);
+      log(`MCP server exited (code=${code} signal=${signal}) — restarting in ${Math.round(wait / 1000)}s (#${restarts})`);
+      setTimeout(startServer, wait);
+    });
+  };
+  startServer();
 }
 
 main().catch(e => { log('FATAL: ' + e.message); process.exit(1); });

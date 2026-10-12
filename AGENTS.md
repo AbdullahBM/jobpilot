@@ -112,6 +112,13 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
 tab, feeding and draining the queues continuously, self-recording into the evolution memory. It is
 the hands-free way to run everything step 4 describes. `DRY=1` scrapes only; `RUN_MS=<ms>` time-boxes.
 
+**Never stops.** Every lane runs under a `supervise()` wrapper that auto-restarts it (with backoff)
+if it ever throws, and global `uncaughtException` / `unhandledRejection` handlers keep the process
+alive on any stray error — so one bad lead or page never halts the pipeline. `start.js` (the agent
+entrypoint) respawns the MCP server if it crashes, and **`npm run worker:forever`** respawns the
+whole worker process if it ever dies (crash/OOM/kill). The only thing that stops it is the user
+pressing **⏹ Stop** (which writes `data/.stop` and the worker exits cleanly).
+
 ## Tools (31)
 
 Setup: `launch_chrome` · `onboard_status` · `open_onboarding` · `get_profile` · `set_profile`
