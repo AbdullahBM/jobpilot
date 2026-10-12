@@ -72,7 +72,9 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
    - It is **hard-guarded** — aborts if anything under `data/`, `.env*`, drafts, logs, screenshots,
      or the DB is ever staged. A CI **security gate** (`scripts/ci-security-scan.mjs`) re-checks this
      on every PR, and branch protection won't merge until it passes. Clean `self-evolve` PRs
-     auto-merge. Commits are attributed to the repo owner. The worker runs this every ~20 min.
+     auto-merge (as a **merge commit**, so attribution is preserved). Commits are authored as the
+     **GitHub username** (e.g. `maazbin`) with the account's noreply email — never a real name or a
+     random name, and never a personal email. The worker runs this every ~20 min.
    - When you fix an encounter in code, `resolve_encounter` it, then let the contribute step open
      the PR. File an issue for anything you can't fix so it's tracked.
 

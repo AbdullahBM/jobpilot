@@ -71,7 +71,7 @@ jobs:
     steps:
       - name: Merge clean self-evolve PR
         run: |
-          gh pr merge --squash --auto "${{ github.event.pull_request.number }}" \
+          gh pr merge --merge --auto "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
