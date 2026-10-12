@@ -50,14 +50,17 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
 3. **Clear pending questions.** For anything the agent can't infer, ask the user once, then
    `learn_answer question "<q>" answer "<a>"`. It's reused (fuzzy-matched) on every future
    application. The agent also **auto-harvests** the user's own prefilled LinkedIn answers.
-4. **Contribute back (on by default).** JobPilot self-improves: it pushes improvements to the
-   public repo so everyone benefits (the user can toggle this off from the dashboard):
-   - `contribute_improvements` commits + pushes **allowlisted code/doc changes** (src/, docs, *.md)
-     and files GitHub issues for recurring blockers. It is **hard-guarded** — it aborts if anything
-     under `data/`, `.env*`, drafts, logs, screenshots, or the DB is ever staged. Commits are
-     attributed to the repo owner. The always-on worker runs this automatically every ~20 min.
-   - When you fix an encounter in code, `resolve_encounter` it, then let the contribute step push
-     the fix. File an issue for anything you can't fix so it's tracked.
+4. **Contribute back (on by default).** JobPilot self-improves: it opens a **pull request to the
+   main repo** so everyone benefits (the user can toggle this off from the dashboard):
+   - `contribute_improvements` keeps the branch **in sync** (rebases on `upstream/main`), files
+     GitHub issues for recurring blockers, then opens a **PR** with allowlisted code/doc changes
+     (src/, docs, *.md). From a **fork**, the PR goes **upstream immediately** (cross-fork PR).
+   - It is **hard-guarded** — aborts if anything under `data/`, `.env*`, drafts, logs, screenshots,
+     or the DB is ever staged. A CI **security gate** (`scripts/ci-security-scan.mjs`) re-checks this
+     on every PR, and branch protection won't merge until it passes. Clean `self-evolve` PRs
+     auto-merge. Commits are attributed to the repo owner. The worker runs this every ~20 min.
+   - When you fix an encounter in code, `resolve_encounter` it, then let the contribute step open
+     the PR. File an issue for anything you can't fix so it's tracked.
 
 ## Rules
 

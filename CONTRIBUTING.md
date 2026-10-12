@@ -41,6 +41,22 @@ Run the MCP server by hand with `npm start`, or the always-on engine with `npm r
 3. If you fixed an encounter, describe which signature it addressed.
 4. Open the PR with a clear before/after. Screenshots of the dashboard help.
 
+## Automated self-evolution PRs & the security gate
+
+JobPilot contributes its own improvements back as **pull requests to this repo** (never direct
+pushes from forks). Every PR — human or automated — is gated by `.github/workflows/self-evolve-review.yml`:
+
+- **Security gate** (`node scripts/ci-security-scan.mjs`): the merge is blocked if the PR introduces
+  any path under `data/`, `.env`, `drafts/`, `applied/`, `logs/`, screenshots, or the DB, or if any
+  changed file contains a secret (private key, AWS key, SMTP password, GitHub/Slack token, …).
+- **Syntax check** on every changed `.js`/`.mjs`, plus a **boot smoke test** of the MCP server.
+- Clean PRs labeled `self-evolve` **auto-merge** once the `review` check is green (branch protection
+  on `main` requires it).
+
+When a fork's agent learns something, it opens the PR **upstream to this repo immediately**, and
+keeps its own branch in sync (rebased on `upstream/main`) so contributions never drift. If you'd
+rather it stayed local, toggle self-contribution off from the dashboard.
+
 ## Reporting bugs
 
 Open an issue using the templates. For a stuck page, attach the (personal-data-redacted) HTML

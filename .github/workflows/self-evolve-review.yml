@@ -1,0 +1,54 @@
+name: Self-evolve PR review
+
+# Reviews every pull request (especially the automated self-evolution PRs JobPilot opens).
+# Security gate + syntax check must pass before merge. Clean, labeled self-evolve PRs auto-merge.
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # 1) SECURITY GATE — no personal data, credentials, or out-of-allowlist paths.
+      - name: Security gate
+        run: node scripts/ci-security-scan.mjs
+
+      # 2) Syntax-check every changed JS/MJS file.
+      - name: Syntax check changed JS
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          files=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -E '\.m?js$' || true)
+          for f in $files; do [ -f "$f" ] && echo "checking $f" && node --check "$f"; done
+
+      # 3) Server must still boot (imports resolve, tools register).
+      - name: Boot smoke test
+        run: npm ci --no-audit --no-fund && node -e "import('./mcp-server.js').then(()=>{console.log('MCP boot OK');process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})"
+        env:
+          CI: "true"
+
+  automerge:
+    needs: review
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'self-evolve')
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge for clean self-evolve PRs
+        run: gh pr merge --squash --auto "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

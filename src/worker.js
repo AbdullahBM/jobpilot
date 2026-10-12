@@ -298,6 +298,10 @@ async function refresher() {
 try { fs.rmSync(STOPFILE, { force: true }); } catch {}   // clear any stale stop flag
 await launchChrome();
 await initDB();
+// Keep the repo branch in sync with the main repo on startup (fork → rebase on upstream).
+if (!DRY && getProfile().consent?.autoContribute !== false) {
+  try { const { syncBranch } = await import('./contribute.js'); const s = await syncBranch(); say('main', `branch sync: ${s.synced ? 'in sync with ' + (s.upstream || 'origin') : 'skipped (' + (s.reason || '') + ')'}`); } catch {}
+}
 const uiPort = await startServer();           // dashboard + Questions + /api/answers + /evidence + /api/stop
 process.env.JOB_AGENT_PORT = String(uiPort || 7788);
 say('main', `worker start${DRY ? ' (DRY)' : ''} — concurrent lanes: scout · mailer · applier · connector`);
