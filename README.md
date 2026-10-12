@@ -162,7 +162,7 @@ cd jobpilot
 
 Say something like:
 
-> *“find and apply to AI jobs — and keep self-evolving + contributing PRs while you do”*
+> *““kill old workers and processes then find and apply to relavent  jobs — and keep self-evolving + contributing PRs while you do””*
 
 You don't have to spell out the self-evolution part — it's always on — but it's a good reminder of
 what the agent will do. Other things you can tell it:
