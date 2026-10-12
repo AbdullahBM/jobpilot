@@ -15,10 +15,12 @@ your judgement differs. When no tool fits, `run_script` lets you author one.
 ## The moment you connect, in order
 
 1. **`onboard_status`** — Chrome debug up? which sites logged in? profile gaps? Everything branches here.
-2. **If `chrome.ok` is false → `launch_chrome`.** It opens the user's real Chrome with the debug
-   port (force-closing a non-debug Chrome first, restoring their tabs/logins). Re-check
-   `onboard_status`; if **LinkedIn** or **Gmail** isn't detected, tell the user in ONE line to log
-   into them in that window, then continue.
+2. **Chrome launches itself.** The server (and the always-on worker) auto-launch the debug Chrome
+   on boot, and any browser action self-heals by relaunching Chrome if the port is down — you do
+   **not** need to ask the user to start Chrome, and you rarely need `launch_chrome` (it exists only
+   as a manual override). After it's up, if **LinkedIn** or **Gmail** isn't logged in, tell the user
+   in ONE line to log into them in that window; the worker shows a one-click "log in" banner and
+   **pauses that site (backing off) instead of retrying in a loop** until the user is back in.
 3. **If `profileGaps` is non-empty → `open_onboarding`** and give the user the URL
    (`http://127.0.0.1:7788/onboard`). They upload a CV and paste links/roles there — never ask for
    a file path in chat. Poll `get_profile` until gaps clear.

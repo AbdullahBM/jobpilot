@@ -23,9 +23,17 @@ export async function cdpStatus() {
 
 export async function getBrowser() {
   if (_browser && _browser.isConnected()) return _browser;
-  const status = await cdpStatus();
+  let status = await cdpStatus();
   if (!status.ok) {
-    throw new Error(`Chrome CDP not available (${status.reason}). The server launches it automatically; if this persists, call launch_chrome.`);
+    // Self-heal: auto-launch the debug Chrome on demand so no one ever has to ask.
+    try {
+      const { launchChrome } = await import('../mcp/chrome.js');
+      await launchChrome();
+      for (let i = 0; i < 15 && !status.ok; i++) { await new Promise(r => setTimeout(r, 1000)); status = await cdpStatus(); }
+    } catch {}
+  }
+  if (!status.ok) {
+    throw new Error(`Chrome CDP not available (${status.reason}). Tried to auto-launch it; if this persists, open Chrome once.`);
   }
   _browser = await chromium.connectOverCDP(CDP);
   return _browser;

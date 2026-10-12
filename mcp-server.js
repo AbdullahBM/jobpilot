@@ -441,6 +441,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 async function main() {
   await initDB();
   await initAttempts();
+  // Auto-launch the debug Chrome at boot so the agent never has to be told to.
+  try { await launchChrome(); } catch (e) { console.error('[job-agent] Chrome auto-launch:', e.message); }
   try { PORT = await startServer(); } catch (e) { console.error('[job-agent] web server failed:', e.message); }
   const transport = new StdioServerTransport();
   await server.connect(transport);
