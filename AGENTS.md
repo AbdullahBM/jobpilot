@@ -12,6 +12,30 @@ are relevant, which channel per lead, what the email says, pace, when to stop �
 coarse wrappers (`find_jobs`, `scrape_fresh`) are conveniences; prefer composing primitives when
 your judgement differs. When no tool fits, `run_script` lets you author one.
 
+## 🔁 Keep yourself in the loop — never stop until the user stops you
+
+**The single most important behavior: the system must keep finding, applying, and self-evolving
+(via back-contributions) in a continuous loop — it must NOT stop just because you (the agent)
+finished a batch of tool calls.** Self-evolution + recontribution is the point of this project.
+
+How this is guaranteed:
+- The moment the MCP server boots, it **auto-starts the full always-on worker** (scout · mailer ·
+  applier · connector · evolver) as a detached, self-respawning background process
+  (`ensureWorkerRunning()` in `src/evolve-loop.js` → `scripts/worker-forever.mjs`). That process
+  keeps hunting + applying + self-evolving **on its own**, looping until the user presses ⏹ Stop
+  (which writes `data/.stop`). It survives your session ending.
+- So even after you return a reply, the pipeline keeps running. **Do not treat "I finished a
+  batch" as "the job is done."** The job is done only when the user presses Stop.
+- If you are driving interactively as well, keep going: scrape → act on the freshest leads →
+  record status → run `contribute_improvements` → repeat. Don't end the turn early while there are
+  fresh leads or open PRs to review.
+- The only thing that stops the loop is the user: ⏹ Stop button or `npm run stop` (writes
+  `data/.stop`). Opt out of autostart only with `JOBPILOT_NO_AUTOWORKER=1`.
+
+> **NOTE (standing instruction):** when you hit a recurring problem (like the agent stopping
+> instead of looping), **file a GitHub issue** describing it, and **resolve/close it** once the
+> fix is shipped. See issue #20 (agent-loop autostart) as the template.
+
 ## The moment you connect, in order
 
 1. **`onboard_status`** — Chrome debug up? which sites logged in? profile gaps? Everything branches here.
