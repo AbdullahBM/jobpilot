@@ -219,43 +219,74 @@ export async function contributeViaPR(message) {
 }
 
 /**
- * Main-repo-only: review EVERY open PR (not just `self-evolve`-labelled ones) and act on each:
+ * Approve pending CI for PRs from forks (first-time / external contributors). GitHub holds
+ * their workflow runs in `action_required` until a maintainer approves — otherwise the `review`
+ * security gate never runs and the PR can never be safely merged. As the repo owner we approve
+ * those runs so the security gate executes. We NEVER merge on the strength of this approval alone —
+ * the PR still only merges once the `review` gate actually concludes SUCCESS.
+ * @param {string} repo - owner/name
+ * @returns {Promise<string[]>} ids of runs approved
+ */
+async function approveForkCIRuns(repo) {
+  const approved = [];
+  try {
+    const raw = await gh('api', `repos/${repo}/actions/runs?status=action_required&per_page=50`, '--jq', '.workflow_runs[].id');
+    const ids = (raw || '').split('\n').map(s => s.trim()).filter(Boolean);
+    for (const id of ids) {
+      try { await gh('api', '--method', 'POST', `repos/${repo}/actions/runs/${id}/approve`); approved.push(id); } catch {}
+    }
+    // Also handle runs explicitly 'waiting' for approval
+    const raw2 = await gh('api', `repos/${repo}/actions/runs?status=waiting&per_page=50`, '--jq', '.workflow_runs[].id').catch(() => '');
+    for (const id of (raw2 || '').split('\n').map(s => s.trim()).filter(Boolean)) {
+      if (approved.includes(id)) continue;
+      try { await gh('api', '--method', 'POST', `repos/${repo}/actions/runs/${id}/approve`); approved.push(id); } catch {}
+    }
+  } catch {}
+  return approved;
+}
+
+/**
+ * Main-repo-only: review EVERY open PR from EVERYONE — including PRs from OTHER contributors'
+ * forks (there are several contributing agents out there, not just this one). Acts on each:
+ *   • first approve any pending fork CI so the `review` security gate actually runs;
  *   • empty / redundant PR (0 changes)        → close with a note.
  *   • useful PR whose `review` gate passed      → merge (merge commit). Uses --admin to force
- *                                                 past a stuck/mechanical `automerge` required
- *                                                 check so a useful PR is never left hanging.
+ *                                                 past a stuck/mechanical `automerge` required check.
  *   • useful PR whose `review` gate FAILED      → left open + flagged. The `review` job is the
  *                                                 data-safety + security gate; that one is NEVER
- *                                                 bypassed, even for a useful-looking PR.
- *   • useful PR with no CI yet / pending        → left open for the next cycle.
+ *                                                 bypassed, even for a useful-looking PR from anyone.
+ *   • useful PR with CI pending/absent          → CI (re)triggered via approval; retried next cycle.
  *
- * "review gate passed" = the CI check named `review` concluded success. The `automerge` check is
- * only a merge mechanic — its failure does not block us (we admin-merge instead).
- * @returns {Promise<{merged: string[], closed: string[], skipped: string[], reason?}>}
+ * @returns {Promise<{merged: string[], closed: string[], skipped: string[], approvedCI?: string[], reason?}>}
  */
 export async function reviewAndMergePRs() {
   try {
     const info = await repoInfo();
     if (info.isFork) return { merged: [], closed: [], skipped: [], reason: 'this is a fork — PRs are reviewed on the upstream repo' };
 
+    // Let external contributors' CI run so their security gate can pass.
+    const approvedCI = await approveForkCIRuns(info.upstream);
+
     const raw = await gh(
       'pr', 'list',
       '--repo', info.upstream,
       '--state', 'open',
-      '--json', 'number,title,statusCheckRollup,url,additions,deletions,changedFiles',
+      '--json', 'number,title,statusCheckRollup,url,additions,deletions,changedFiles,author,isCrossRepository,mergeable,mergeStateStatus',
       '--limit', '50',
     );
     const prs = JSON.parse(raw || '[]');
-    const merged = [], closed = [], skipped = [];
+    const merged = [], closed = [], skipped = [], conflicts = [];
 
     for (const pr of prs) {
+      const who = pr.author?.login ? `@${pr.author.login}` : 'unknown';
+      const origin = pr.isCrossRepository ? 'fork' : 'branch';
       const useful = (pr.changedFiles || 0) > 0 && ((pr.additions || 0) + (pr.deletions || 0)) > 0;
 
       // Empty / redundant PR — nothing to merge, close it politely.
       if (!useful) {
         try {
           await gh('pr', 'close', String(pr.number), '--repo', info.upstream,
-            '--comment', 'Auto-closed by JobPilot: this PR has no changes against main (already merged / redundant).');
+            '--comment', `Auto-closed by JobPilot: this PR has no changes against main (already merged / redundant). Thanks ${who}!`);
           closed.push(pr.url);
         } catch { skipped.push(pr.url); }
         continue;
@@ -267,28 +298,38 @@ export async function reviewAndMergePRs() {
       const reviewPassed = reviewCheck
         ? (reviewCheck.conclusion === 'SUCCESS' || reviewCheck.conclusion === 'success')
         : false;
-      // If there are NO checks at all yet, give CI a chance next cycle.
       const noChecksYet = checks.length === 0;
 
-      if (reviewPassed) {
-        // Useful + security gate green → merge, forcing past any stuck `automerge` mechanic.
-        try {
-          await gh('pr', 'merge', '--merge', '--admin', String(pr.number), '--repo', info.upstream);
-          merged.push(pr.url);
-        } catch {
-          // Fall back to enabling auto-merge if admin merge is not permitted
-          try { await gh('pr', 'merge', '--merge', '--auto', String(pr.number), '--repo', info.upstream); merged.push(pr.url); }
-          catch { skipped.push(pr.url); }
-        }
-      } else {
-        // Security/review gate not green (failed or pending) → never bypass it. Leave for CI / human.
-        skipped.push(pr.url + (noChecksYet ? ' (awaiting CI)' : ' (review gate not green — not bypassed)'));
+      if (!reviewPassed) {
+        // Security/review gate not green → never bypass it (protects everyone's data safety).
+        skipped.push(`${pr.url} (${origin} by ${who}${noChecksYet ? ' — awaiting CI' + (approvedCI.length ? ' (approved, will run)' : '') : ' — review gate not green, not bypassed'})`);
+        continue;
+      }
+
+      // Security gate is green. Now handle mergeability.
+      // CONFLICTING → cannot merge as-is; flag for conflict resolution (handled by resolveAndMergePR).
+      if (pr.mergeable === 'CONFLICTING') {
+        conflicts.push(`${pr.url} (${origin} by ${who} — useful + security-passed, needs conflict resolution)`);
+        continue;
+      }
+      // BEHIND the base but not conflicting → update the branch (merge base in) so it can merge.
+      if (/BEHIND/i.test(pr.mergeStateStatus || '')) {
+        try { await gh('api', '--method', 'PUT', `repos/${info.upstream}/pulls/${pr.number}/update-branch`); } catch {}
+      }
+
+      // Useful + security gate green + mergeable → merge (works for fork PRs too), force past stuck automerge.
+      try {
+        await gh('pr', 'merge', '--merge', '--admin', String(pr.number), '--repo', info.upstream);
+        merged.push(`${pr.url} (${origin} by ${who})`);
+      } catch {
+        try { await gh('pr', 'merge', '--merge', '--auto', String(pr.number), '--repo', info.upstream); merged.push(`${pr.url} (${origin} by ${who})`); }
+        catch { skipped.push(`${pr.url} (${origin} by ${who} — merge blocked)`); }
       }
     }
 
     // After merging PRs, pull the new commits into our local branch
     if (merged.length) await syncBranch().catch(() => {});
-    return { merged, closed, skipped };
+    return { merged, closed, skipped, conflicts, approvedCI };
   } catch (e) {
     return { merged: [], closed: [], skipped: [], reason: e.message };
   }

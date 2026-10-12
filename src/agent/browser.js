@@ -11,13 +11,15 @@ let _browser = null;
 
 export async function cdpStatus() {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 3000);
+  const t = setTimeout(() => ctrl.abort(), 5000);
   try {
     const r = await fetch(`${CDP}/json/version`, { signal: ctrl.signal }).catch(() => null);
     clearTimeout(t);
     if (!r || !r.ok) return { ok: false, reason: `CDP not reachable at ${CDP}` };
     const v = await r.json();
-    return { ok: true, version: v.Browser, userAgent: v['User-Agent'] };
+    // Prefer the explicit browser-level WS URL — avoids Playwright's own discovery
+    // timing out when Chrome has many tabs/contexts loaded.
+    return { ok: true, version: v.Browser, userAgent: v['User-Agent'], wsUrl: v.webSocketDebuggerUrl };
   } catch (e) { clearTimeout(t); return { ok: false, reason: e.message }; }
 }
 
@@ -29,14 +31,29 @@ export async function getBrowser() {
     try {
       const { launchChrome } = await import('../mcp/chrome.js');
       await launchChrome();
-      for (let i = 0; i < 15 && !status.ok; i++) { await new Promise(r => setTimeout(r, 1000)); status = await cdpStatus(); }
+      for (let i = 0; i < 20 && !status.ok; i++) { await new Promise(r => setTimeout(r, 1500)); status = await cdpStatus(); }
     } catch {}
   }
   if (!status.ok) {
     throw new Error(`Chrome CDP not available (${status.reason}). Tried to auto-launch it; if this persists, open Chrome once.`);
   }
-  _browser = await chromium.connectOverCDP(CDP);
-  return _browser;
+
+  // Use the browser-level WebSocket URL directly from /json/version.
+  // This skips Playwright's own CDP discovery step that times out when Chrome
+  // has many open tabs/contexts — the single most common cause of the
+  // "connectOverCDP: Timeout 30000ms exceeded" error.
+  const wsEndpoint = status.wsUrl || CDP;
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      _browser = await chromium.connectOverCDP(wsEndpoint, { timeout: 60000 });
+      return _browser;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3) await new Promise(r => setTimeout(r, 3000 * attempt));
+    }
+  }
+  throw new Error(`connectOverCDP failed after 3 attempts: ${lastErr?.message}`);
 }
 
 export async function getContext() {

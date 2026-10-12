@@ -294,9 +294,9 @@ async function connector() {
   }
 }
 
-// ── dashboard + playbook + self-contribution refresher ──────────────────────────
+// ── dashboard + playbook + login refresher ──────────────────────────────────────
 async function refresher() {
-  let lastContribute = 0, lastLoginCheck = 0, lastSync = 0;
+  let lastLoginCheck = 0;
   while (running()) {
     try { writeDash(); writePlaybook(); } catch {}
     // Reconcile stale login banners with reality: if a site is FLAGGED but actually logged in
@@ -311,42 +311,56 @@ async function refresher() {
         if (v.linkedin || v.gmail) { writeDash(); say('main', `login reconciled → LinkedIn:${v.linkedin} Gmail:${v.gmail}`); }
       } catch {}
     }
-    // Every ~10 min: KEEP SYNCING with the main repo (hard rule — see AGENTS.md).
-    //   Fork → rebase on upstream/main and push the fork current (move to the newer version).
-    //   Main → review + merge open self-evolve PRs that passed CI, then fast-forward main.
-    // This runs independently of the full contribute round so the branch never drifts.
-    if (!DRY && getProfile().consent?.autoContribute !== false && Date.now() - lastSync > 10 * 60000) {
-      lastSync = Date.now();
-      try {
-        const { syncBranch, repoInfo, reviewAndMergePRs } = await import('./contribute.js');
-        const info = await repoInfo();
-        const s = await syncBranch();
-        if (s.advanced) say('contribute', `pulled newer upstream version (now in sync with ${s.upstream || 'origin'})`);
-        if (!info.isFork) {
-          const rev = await reviewAndMergePRs();
-          if (rev.merged?.length) say('contribute', `reviewed + merged PRs: ${rev.merged.join(', ')}`);
-          if (rev.closed?.length) say('contribute', `closed empty/redundant PRs: ${rev.closed.join(', ')}`);
-        }
-      } catch (e) { say('contribute', 'sync skip: ' + e.message.slice(0, 80)); }
-    }
-    // Every ~20 min: full contribute round — sync first, file blocker issues, then open a PR
-    // (fork) or review+merge PRs (main). ON by default; hard-guarded against committing data/creds.
-    if (!DRY && getProfile().consent?.autoContribute !== false && Date.now() - lastContribute > 20 * 60000) {
-      lastContribute = Date.now();
-      try {
-        const { contributeRound } = await import('./contribute.js');
-        const r = await contributeRound();
-        if (r.issues?.filed?.length) say('contribute', `filed issues: ${r.issues.filed.join(', ')}`);
-        // PR opened for local changes (fork → upstream, main → its own main)
-        if (r.pr?.pr) say('contribute', `opened self-evolve PR: ${r.pr.pr}`);
-        else if (r.pr?.reason && r.pr.reason !== 'nothing to contribute') say('contribute', r.pr.reason);
-        // Main-repo reviewer: merged open self-evolve PRs that passed CI
-        if (r.review?.merged?.length) say('contribute', `reviewed + merged PRs: ${r.review.merged.join(', ')}`);
-        if (r.review?.closed?.length) say('contribute', `closed empty/redundant PRs: ${r.review.closed.join(', ')}`);
-        if (r.sync?.advanced) say('contribute', `synced to newer upstream version`);
-      } catch (e) { say('contribute', 'skip: ' + e.message.slice(0, 80)); }
-    }
     await SLEEP(20000);
+  }
+}
+
+// ── EVOLVER lane — self-evolution + recontribution, a FIRST-CLASS lane ───────────
+// PR work is treated with the SAME priority as applying: it runs as its own concurrent lane
+// and handles PRs PROMPTLY rather than as a slow background chore.
+//   • every ~2 min: sync with main + (main repo) review & merge open PRs — so PRs never sit.
+//   • every ~10 min: full contribute round — file blocker issues + open PRs for any changes.
+// Hard-guarded against committing data/creds. Paced so gh/git calls stay polite.
+async function evolver() {
+  let lastSync = 0, lastContribute = 0;
+  const EVOLVE_PR_MS = 2 * 60000;    // prompt PR review/merge + sync — co-equal with apply pacing
+  const EVOLVE_FULL_MS = 10 * 60000; // full contribute round
+  while (running()) {
+   try {
+    if (DRY || getProfile().consent?.autoContribute === false) { await SLEEP(30000); continue; }
+
+    // Prompt PR handling (same priority as job apply): sync + review/merge open PRs.
+    if (Date.now() - lastSync > EVOLVE_PR_MS) {
+      lastSync = Date.now();
+      beat('evolver', 'sync + review PRs');
+      const { syncBranch, repoInfo, reviewAndMergePRs } = await import('./contribute.js');
+      const info = await repoInfo();
+      const s = await syncBranch();
+      if (s.advanced) say('contribute', `pulled newer upstream version (in sync with ${s.upstream || 'origin'})`);
+      if (!info.isFork) {
+        const rev = await reviewAndMergePRs();
+        if (rev.merged?.length) say('contribute', `reviewed + merged PRs: ${rev.merged.join(', ')}`);
+        if (rev.closed?.length) say('contribute', `closed empty/redundant PRs: ${rev.closed.join(', ')}`);
+      }
+    }
+
+    // Full contribute round: file blocker issues + open PRs for local code/doc changes.
+    if (Date.now() - lastContribute > EVOLVE_FULL_MS) {
+      lastContribute = Date.now();
+      beat('evolver', 'contribute round');
+      const { contributeRound } = await import('./contribute.js');
+      const r = await contributeRound();
+      if (r.issues?.filed?.length) say('contribute', `filed issues: ${r.issues.filed.join(', ')}`);
+      if (r.pr?.pr) say('contribute', `opened self-evolve PR: ${r.pr.pr}`);
+      else if (r.pr?.reason && r.pr.reason !== 'nothing to contribute') say('contribute', r.pr.reason);
+      if (r.review?.merged?.length) say('contribute', `reviewed + merged PRs: ${r.review.merged.join(', ')}`);
+      if (r.review?.closed?.length) say('contribute', `closed empty/redundant PRs: ${r.review.closed.join(', ')}`);
+      if (r.sync?.advanced) say('contribute', `synced to newer upstream version`);
+    }
+
+    beat('evolver', 'idle (watching for PRs + changes)');
+    await SLEEP(30000);
+   } catch (e) { say('contribute', 'evolver error (continuing): ' + ((e && e.message) || e || '').toString().slice(0, 80)); await SLEEP(30000); }
   }
 }
 
@@ -361,18 +375,20 @@ if (!DRY && getProfile().consent?.autoContribute !== false) {
 let uiPort = 7788;
 try { uiPort = await startServer() || 7788; } catch (e) { say('main', 'dashboard server issue (continuing): ' + (e.message || '').slice(0, 80)); }
 process.env.JOB_AGENT_PORT = String(uiPort);
-say('main', `worker start${DRY ? ' (DRY)' : ''} — concurrent lanes: scout · mailer · applier · connector`);
+say('main', `worker start${DRY ? ' (DRY)' : ''} — concurrent lanes: scout · mailer · applier · connector · evolver`);
 say('main', `dashboard + Stop button live at http://127.0.0.1:${uiPort}`);
 beat('main', 'running', { uiPort });
 // Watchdog: when the Stop flag appears (UI/CLI), exit the whole process promptly.
 (async () => { while (!stopped()) await SLEEP(1500); say('main', '⏹ Stop requested — shutting down all lanes'); beat('main', 'stopped'); await SLEEP(500); process.exit(0); })();
 // Each lane runs under supervise(): a crash auto-restarts the lane, never the whole worker.
 // Promise.all resolves only when every lane returns (i.e. Stop was requested).
+// evolver is a FIRST-CLASS lane — PR/self-evolution has the same priority as job applying.
 await Promise.all([
   supervise('scout', scout),
   supervise('mailer', mailer),
   supervise('applier', applier),
   supervise('connector', connector),
+  supervise('evolver', evolver),
   supervise('refresher', refresher),
 ]);
 beat('main', 'stopped');
