@@ -341,4 +341,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { initAttempts } = await import('./attempts.js');
   await initDB(); await initAttempts();
   await startServer();
+  // Self-evolution is guaranteed in every long-lived entrypoint — the server is no exception.
+  try { const { startBackgroundEvolve } = await import('./evolve-loop.js'); startBackgroundEvolve(); } catch (e) { console.error('[job-agent] background evolve not started:', e.message); }
 }
