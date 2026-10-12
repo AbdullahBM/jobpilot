@@ -56,8 +56,18 @@ function flagLogin(site, reason, url) {
   say('main', `⚠ ${site} needs login — surfaced one-click link on dashboard (${state.loginNeeded[site].url})`);
   beat('main', 'login-needed');
 }
-function clearLogin(site) { if (state.loginNeeded && state.loginNeeded[site]) { delete state.loginNeeded[site]; try { fs.writeFileSync(STATE, JSON.stringify(state)); } catch {} } }
+function clearLogin(site) { if (state.loginNeeded && state.loginNeeded[site]) { delete state.loginNeeded[site]; delete loginProbeAt[site]; try { fs.writeFileSync(STATE, JSON.stringify(state)); } catch {} } }
 const notLoggedIn = d => /not logged in|log into|authwall|sign in|please log in/i.test(d || '');
+// Login backoff: once a site needs login, stop hammering it — surface the banner and only
+// re-probe every few minutes. Returns true if we should SKIP acting on this site right now.
+const loginProbeAt = {};
+function loginBackoff(site) {
+  if (!state.loginNeeded || !state.loginNeeded[site]) return false;
+  const now = Date.now();
+  if (now >= (loginProbeAt[site] || 0)) { loginProbeAt[site] = now + 3 * 60000; return false; } // allow one probe / 3 min
+  return true;
+}
+const needsLogin = site => !!(state.loginNeeded && state.loginNeeded[site]); // read-only check
 
 // ── queue selector (shared) ──────────────────────────────────────────────────
 function queue(channel, limit = 25) {
@@ -89,13 +99,16 @@ async function scout() {
       const jobQ = rankByUCB('job_query', buildListingQueries({ limit: 18 }));
 
       // 1) LinkedIn hiring POSTS — primary source (highest email yield), every loop.
-      const q = postQ[0];
-      beat('scout', `LI posts: ${q}`);
-      const r = await liPosts(q, { datePosted: 'past-24h' });
-      if (r.ok) { const { n, email } = ingest(r.leads); outcome('post_query', q, { yieldN: email * 2 + n }); say('scout', `posts "${q}" +${n} (${email} email)`); clearLogin('LinkedIn'); }
-      else if (notLoggedIn(r.detail)) flagLogin('LinkedIn', 'LinkedIn session expired while scraping posts');
-      await jitter(PACE.scout);
-      if (!running()) break;
+      //    Skipped while LinkedIn needs a login (banner shown); re-probed every ~3 min.
+      if (!loginBackoff('LinkedIn')) {
+        const q = postQ[0];
+        beat('scout', `LI posts: ${q}`);
+        const r = await liPosts(q, { datePosted: 'past-24h' });
+        if (r.ok) { const { n, email } = ingest(r.leads); outcome('post_query', q, { yieldN: email * 2 + n }); say('scout', `posts "${q}" +${n} (${email} email)`); clearLogin('LinkedIn'); }
+        else if (notLoggedIn(r.detail)) flagLogin('LinkedIn', 'Please log into LinkedIn in the JobPilot Chrome window — scraping is paused until you do');
+        await jitter(PACE.scout);
+        if (!running()) break;
+      } else { beat('scout', 'LinkedIn paused — waiting for you to log in'); }
 
       // 2) The wider internet — HN, Reddit, public boards — EVERY loop (unbiased variety,
       //    no LinkedIn dependence, mostly email/form leads). Rotate one web source per loop
@@ -112,8 +125,8 @@ async function scout() {
       if (!running()) break;
 
       // 3) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
-      //    throttle risk; posts and the web carry the pipeline).
-      if (i % 2 === 0) {
+      //    throttle risk; posts and the web carry the pipeline). Also gated on login.
+      if (i % 2 === 0 && !loginBackoff('LinkedIn')) {
         const jq = jobQ[0];
         beat('scout', `LI jobs: ${jq}`);
         for (const geoId of ['92000000', '101022442']) { // Worldwide, Pakistan
@@ -135,6 +148,8 @@ async function scout() {
 async function mailer() {
   while (running()) {
     if (capLeft('email', 'email') <= 0) { beat('mailer', 'daily cap reached'); await SLEEP(10 * 60000); continue; }
+    // If Gmail needs a login, don't hammer it — show the banner and wait, re-probing every ~3 min.
+    if (loginBackoff('Gmail')) { beat('mailer', 'paused — waiting for you to log into Gmail'); await SLEEP(30000); continue; }
     const j = queue('email', 12).find(j => !alreadyEmailed(j.email) && !alreadyApplied(j.company, j.role));
     if (!j) { beat('mailer', 'idle (queue empty)'); await SLEEP(30000); continue; }
     const p = getProfile();
@@ -145,7 +160,7 @@ async function mailer() {
     if (DRY) { say('mailer', `DRY → ${j.email}`); setStatus(j.url, 'emailed', 'DRY'); await jitter(PACE.mailer); continue; }
     const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: p.cvPath });
     if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
-    else if (notLoggedIn(r.detail)) flagLogin('Gmail', 'Gmail session expired — needed to send email');
+    else if (notLoggedIn(r.detail)) { flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do'); continue; }
     else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
     log('email_send', j.company, j.role, j.email, r.ok ? 'ok' : 'fail', r.detail);
     outcome('email_domain', (j.email.split('@')[1] || ''), { win: r.ok });
@@ -161,8 +176,8 @@ let easyFailStreak = 0;          // consecutive non-apply Easy Apply outcomes
 async function applier() {
   let turn = 0;
   while (running()) {
-    const liCooling = Date.now() < liCooldownUntil;
-    // While LinkedIn is cooling down, only run the forms side (non-LinkedIn traffic).
+    const liCooling = Date.now() < liCooldownUntil || needsLogin('LinkedIn');
+    // While LinkedIn is cooling down OR needs a login, only run the forms side (non-LinkedIn traffic).
     const doEasy = liCooling ? false : turn++ % 2 === 0;
     const chan = doEasy ? 'easy_apply' : 'form';
     const capK = doEasy ? 'easy' : 'form', capType = doEasy ? 'li_easy_apply' : 'portal_apply';
@@ -226,6 +241,7 @@ let connectPaused = false;
 async function connector() {
   while (running()) {
     if (connectPaused || capLeft('connect', 'connect') <= 0) { beat('connector', connectPaused ? 'paused (weekly limit)' : 'daily cap'); await SLEEP(15 * 60000); continue; }
+    if (needsLogin('LinkedIn')) { beat('connector', 'paused — waiting for you to log into LinkedIn'); await SLEEP(60000); continue; }
     const j = queue('connect', 15).find(j => j.poster_url && !alreadyConnected(j.poster_url) && !alreadyApplied(j.company, j.role));
     if (!j) { beat('connector', 'idle (queue empty)'); await SLEEP(45000); continue; }
     bumpAttempt(j.url);
