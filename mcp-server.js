@@ -49,6 +49,15 @@ async function timed(tool, target, args, maxAttempts, fn) {
 const ok  = obj => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 
 let PORT = Number(process.env.JOB_AGENT_PORT) || 7788;
+let UI_STARTED = false;   // true once startServer() has actually bound the port
+
+// Lazily start the dashboard/onboarding web server only when a tool actually needs it, so the
+// MCP server doesn't auto-bind a port every time an agent (Kiro/Claude/Codex) loads the config.
+async function ensureUI() {
+  if (UI_STARTED) return;
+  UI_STARTED = true;  // set before await to prevent concurrent double-starts
+  try { const p = await startServer(); if (p) PORT = p; } catch { /* non-fatal */ }
+}
 
 // ── TOOL DEFINITIONS ──────────────────────────────────────────────────────────
 const TOOLS = [
@@ -311,13 +320,13 @@ const TOOLS = [
     name: 'open_onboarding',
     description: "Return the local onboarding URL where the user UPLOADS their CV and PASTES their links/roles in a form (no typing paths in chat). Give this URL to the user to click. The form writes directly to the profile. Use this instead of asking for a CV path in chat.",
     inputSchema: { type: 'object', properties: {} },
-    handler: async () => ok({ url: `http://127.0.0.1:${PORT}/onboard`, detail: 'Open this to upload CV + paste links' }),
+    handler: async () => { await ensureUI(); return ok({ url: `http://127.0.0.1:${PORT}/onboard`, detail: 'Open this to upload CV + paste links' }); },
   },
   {
     name: 'open_dashboard',
     description: 'Regenerate the HTML dashboard and return the live local URL (scraped jobs, emails sent, applications, step timeline).',
     inputSchema: { type: 'object', properties: {} },
-    handler: async () => { writeDash(); return ok({ url: `http://127.0.0.1:${PORT}/dashboard`, detail: 'live dashboard' }); },
+    handler: async () => { await ensureUI(); writeDash(); return ok({ url: `http://127.0.0.1:${PORT}/dashboard`, detail: 'live dashboard' }); },
   },
 
   // ───────── Runtime extensibility — agent decides & extends on the fly ─────────
@@ -443,7 +452,11 @@ async function main() {
   await initAttempts();
   // Auto-launch the debug Chrome at boot so the agent never has to be told to.
   try { await launchChrome(); } catch (e) { console.error('[job-agent] Chrome auto-launch:', e.message); }
-  try { PORT = await startServer(); } catch (e) { console.error('[job-agent] web server failed:', e.message); }
+  // Only auto-start the dashboard server at boot when explicitly requested (START_UI=1); otherwise
+  // it starts lazily via ensureUI() when a UI tool is used. Prevents binding a port on every MCP load.
+  if (process.env.START_UI === '1') {
+    try { PORT = await startServer(); } catch (e) { console.error('[job-agent] web server failed:', e.message); }
+  }
   if (PORT) process.env.JOB_AGENT_PORT = String(PORT);   // so writeDash() embeds the correct fallback port
   const transport = new StdioServerTransport();
   await server.connect(transport);
