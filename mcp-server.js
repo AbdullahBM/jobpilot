@@ -444,6 +444,7 @@ async function main() {
   // Auto-launch the debug Chrome at boot so the agent never has to be told to.
   try { await launchChrome(); } catch (e) { console.error('[job-agent] Chrome auto-launch:', e.message); }
   try { PORT = await startServer(); } catch (e) { console.error('[job-agent] web server failed:', e.message); }
+  if (PORT) process.env.JOB_AGENT_PORT = String(PORT);   // so writeDash() embeds the correct fallback port
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Agent-only mode: keep self-evolution + recontribution running on a timer too (stands down
