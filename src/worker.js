@@ -291,7 +291,8 @@ async function refresher() {
         if (s.advanced) say('contribute', `pulled newer upstream version (now in sync with ${s.upstream || 'origin'})`);
         if (!info.isFork) {
           const rev = await reviewAndMergePRs();
-          if (rev.merged?.length) say('contribute', `reviewed + merged self-evolve PRs: ${rev.merged.join(', ')}`);
+          if (rev.merged?.length) say('contribute', `reviewed + merged PRs: ${rev.merged.join(', ')}`);
+          if (rev.closed?.length) say('contribute', `closed empty/redundant PRs: ${rev.closed.join(', ')}`);
         }
       } catch (e) { say('contribute', 'sync skip: ' + e.message.slice(0, 80)); }
     }
@@ -307,7 +308,8 @@ async function refresher() {
         if (r.pr?.pr) say('contribute', `opened self-evolve PR: ${r.pr.pr}`);
         else if (r.pr?.reason && r.pr.reason !== 'nothing to contribute') say('contribute', r.pr.reason);
         // Main-repo reviewer: merged open self-evolve PRs that passed CI
-        if (r.review?.merged?.length) say('contribute', `reviewed + merged self-evolve PRs: ${r.review.merged.join(', ')}`);
+        if (r.review?.merged?.length) say('contribute', `reviewed + merged PRs: ${r.review.merged.join(', ')}`);
+        if (r.review?.closed?.length) say('contribute', `closed empty/redundant PRs: ${r.review.closed.join(', ')}`);
         if (r.sync?.advanced) say('contribute', `synced to newer upstream version`);
       } catch (e) { say('contribute', 'skip: ' + e.message.slice(0, 80)); }
     }
