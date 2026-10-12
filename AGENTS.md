@@ -112,12 +112,24 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
 tab, feeding and draining the queues continuously, self-recording into the evolution memory. It is
 the hands-free way to run everything step 4 describes. `DRY=1` scrapes only; `RUN_MS=<ms>` time-boxes.
 
+A fifth lane, **evolver**, runs with the **same priority as the hunting lanes** — it syncs with main
+and reviews/merges open PRs **every ~2 min** (so PRs never sit) and runs a full contribute round
+every ~10 min. Self-evolution + recontribution is co-equal with job applying, not a background chore.
+
 **Never stops.** Every lane runs under a `supervise()` wrapper that auto-restarts it (with backoff)
 if it ever throws, and global `uncaughtException` / `unhandledRejection` handlers keep the process
 alive on any stray error — so one bad lead or page never halts the pipeline. `start.js` (the agent
 entrypoint) respawns the MCP server if it crashes, and **`npm run worker:forever`** respawns the
 whole worker process if it ever dies (crash/OOM/kill). The only thing that stops it is the user
 pressing **⏹ Stop** (which writes `data/.stop` and the worker exits cleanly).
+
+**Agent-only mode also self-evolves.** When the agent is driving through the MCP server with no
+worker running, the server runs a **background evolution loop** (`src/evolve-loop.js`) that keeps
+the dashboard fresh and, on the same ~10-/~20-min cadence, syncs with main + opens/reviews PRs —
+so self-evolution + recontribution happen automatically even without `npm run worker`. It
+**stands down automatically while the worker is live** (detected via the worker heartbeat in
+`data/worker-state.json`) so the two never double-contribute. Disable with
+`JOBPILOT_MCP_AUTOEVOLVE=0`.
 
 ## Tools (31)
 
