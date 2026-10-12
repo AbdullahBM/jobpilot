@@ -49,6 +49,79 @@ const SCAN = () => {
 const BOARD_HOST = /(^|\.)(remoteok\.com|remotive\.com|jobicy\.com|himalayas\.app|weworkremotely\.com|wellfound\.com|arbeitnow\.com|aihackerjobs\.com)$/i;
 const hostOf = u => { try { return new URL(u).hostname; } catch { return ''; } };
 
+// ── Indeed: extract the real ATS link embedded in the posting, or fall back to
+//    connect/email so the lead still gets actioned rather than silently dropped.
+async function resolveIndeed(page) {
+  // Indeed embeds the employer's apply URL in a data attribute or an <a> tag inside
+  // the job posting detail. Try the most common selectors first.
+  const atsUrl = await page.evaluate(() => {
+    // 1. "Apply on company website" button href
+    const ext = document.querySelector('a[data-indeed-apply-joburl], a[href*="indeedapply"], .jobsearch-IndeedApplyButton-newDesign a');
+    if (ext?.href && !ext.href.includes('indeed.com')) return ext.href;
+
+    // 2. Metadata inside the apply widget
+    const meta = document.querySelector('[data-indeed-apply-apitoken], [data-indeed-apply-joburl]');
+    if (meta) {
+      const u = meta.getAttribute('data-indeed-apply-joburl') || meta.getAttribute('action');
+      if (u && !u.includes('indeed.com')) return u;
+    }
+
+    // 3. Any visible "Apply" link pointing off indeed.com
+    for (const a of document.querySelectorAll('a[href]')) {
+      const txt = (a.innerText || '').toLowerCase();
+      if ((txt.includes('apply') || txt.includes('company site')) && !a.href.includes('indeed.com')) return a.href;
+    }
+    return null;
+  }).catch(() => null);
+
+  return atsUrl || null;
+}
+
+// ── Glassdoor: click the "Apply on company site" CTA and return the destination URL.
+async function resolveGlassdoor(page) {
+  const btn = page.getByRole('link', { name: /apply on (company site|employer site)|apply now/i })
+    .or(page.locator('a[data-test="job-link"], a.applyButton').first());
+  if (!(await btn.first().isVisible({ timeout: 6000 }).catch(() => false))) return null;
+
+  const ctx = page.context();
+  const [popup] = await Promise.all([
+    ctx.waitForEvent('page', { timeout: 8000 }).catch(() => null),
+    btn.first().click({ timeout: 8000 }).catch(() => {}),
+  ]);
+
+  if (popup) {
+    await popup.waitForLoadState('domcontentloaded').catch(() => {});
+    const dest = popup.url();
+    await popup.close().catch(() => {});
+    if (dest && !dest.includes('glassdoor.com')) return dest;
+  }
+
+  // Glassdoor navigates in the same tab sometimes
+  await SLEEP(3000);
+  const current = page.url();
+  if (!current.includes('glassdoor.com')) return current;
+  return null;
+}
+
+// ── WeWorkRemotely: the "Apply for this job" button links directly to the employer's URL.
+async function resolveWeWorkRemotely(page) {
+  // WWR posts an <a class="button"> with href pointing to the real application URL.
+  const atsUrl = await page.evaluate(() => {
+    // Primary: the green "Apply for this job" button on the detail page
+    for (const a of document.querySelectorAll('a.button, a.wwr-button, section.apply a, .listing-header-container a')) {
+      const txt = (a.innerText || '').toLowerCase();
+      if ((txt.includes('apply') || txt.includes('job')) && a.href && !a.href.includes('weworkremotely.com')) return a.href;
+    }
+    // Fallback: any off-domain link in the job body
+    for (const a of document.querySelectorAll('.listing-container a[href], .job-listing a[href]')) {
+      if (a.href && !a.href.includes('weworkremotely.com') && /apply|careers|job/i.test(a.href + a.innerText)) return a.href;
+    }
+    return null;
+  }).catch(() => null);
+
+  return atsUrl || null;
+}
+
 async function toForm(page) {
   const u = page.url();
   if (/jobs\.lever\.co\/[^/]+\/[0-9a-f-]{36}$/.test(u)) { await page.goto(u + '/apply', { waitUntil: 'domcontentloaded' }); return; }
@@ -159,7 +232,45 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
     await toForm(page);
     await SLEEP(1500);
     const finalUrl = page.url();
-    if (/linkedin\.com\/(login|authwall)|indeed\.com|glassdoor/.test(finalUrl)) { await encounter('form', 'redirected to login/aggregator: ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'redirected to ' + finalUrl.slice(0, 80), finalUrl }; }
+
+    // ── Indeed: try to extract the real ATS link before bailing out.
+    if (/indeed\.com/.test(finalUrl)) {
+      const atsLink = await resolveIndeed(page);
+      if (atsLink) {
+        await page.goto(atsLink, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await SLEEP(2500);
+        // fall through and let the rest of applyForm handle the real ATS page
+      } else {
+        await encounter('form', 'indeed.com — no external ATS link found; routing to connect/email', { url: finalUrl, page });
+        return { ok: false, result: 'needs_manual', detail: 'indeed.com — route via connect or email', finalUrl };
+      }
+    }
+
+    // ── Glassdoor: click through to the employer's ATS.
+    if (/glassdoor\.com/.test(page.url())) {
+      const atsLink = await resolveGlassdoor(page);
+      if (atsLink) {
+        await page.goto(atsLink, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await SLEEP(2500);
+      } else {
+        await encounter('form', 'glassdoor.com — "Apply on company site" not found; routing to connect/email', { url: page.url(), page });
+        return { ok: false, result: 'needs_manual', detail: 'glassdoor.com — route via connect or email', finalUrl };
+      }
+    }
+
+    // ── WeWorkRemotely: resolve the employer's direct apply URL.
+    if (/weworkremotely\.com/.test(page.url())) {
+      const atsLink = await resolveWeWorkRemotely(page);
+      if (atsLink) {
+        await page.goto(atsLink, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await SLEEP(2500);
+      } else {
+        await encounter('form', 'weworkremotely.com — no external apply link found', { url: page.url(), page });
+        return { ok: false, result: 'needs_manual', detail: 'weworkremotely.com — no external apply link', finalUrl };
+      }
+    }
+
+    if (/linkedin\.com\/(login|authwall)/.test(page.url())) { await encounter('form', 'redirected to linkedin login/authwall', { url: page.url(), page }); return { ok: false, result: 'needs_manual', detail: 'redirected to ' + page.url().slice(0, 80), finalUrl }; }
     if (/workday|myworkdayjobs|icims|taleo|successfactors|oraclecloud|brassring/.test(finalUrl)) return { ok: false, result: 'needs_manual', detail: 'account-gated ATS (Workday/iCIMS/Taleo) — one-click for you', finalUrl };
 
     let n = await fillAll(page, unknown);
