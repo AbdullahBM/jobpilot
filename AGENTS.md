@@ -87,6 +87,11 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
     newest version. The fork must never fall behind main.
   - **Main repo** → continuously **review and merge** open `self-evolve` PRs that passed CI, then
     fast-forward `main`. Don't let PRs pile up.
+  - **Review EVERY open PR, not just `self-evolve` ones.** For each: if it's useful and the
+    `review` CI gate (security + syntax + boot) is green, **merge it somehow** — use `--admin` to
+    force past a stuck/mechanical `automerge` check so a useful PR is never left hanging. Close
+    empty/redundant PRs (0 changes). The ONE thing never bypassed is the `review` security/data-
+    safety gate — a failing security gate blocks the merge even for a useful-looking PR.
   - A change is only "done" once it's pushed / its PR is opened. After any `resolve_encounter` or
     code edit, call `contribute_improvements` (or rely on the worker's ~20-min loop). It always
     **pulls the newest upstream version first**, then contributes. Hard-guarded against ever
