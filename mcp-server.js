@@ -446,6 +446,9 @@ async function main() {
   try { PORT = await startServer(); } catch (e) { console.error('[job-agent] web server failed:', e.message); }
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Agent-only mode: keep self-evolution + recontribution running on a timer too (stands down
+  // automatically while the always-on worker is live, so there's never double-contribution).
+  try { const { startBackgroundEvolve } = await import('./src/evolve-loop.js'); startBackgroundEvolve(); } catch (e) { console.error('[job-agent] background evolve not started:', e.message); }
   // Log to stderr (stdout is the MCP channel)
   console.error(`[job-agent-mcp] ready — ${TOOLS.length} tools over stdio · UI at http://127.0.0.1:${PORT}`);
 }
