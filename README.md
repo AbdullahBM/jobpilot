@@ -53,25 +53,47 @@ Everything is ordered **newest-posted first** — because the first applicant ge
 
 ## 🧬 The self-evolution loop
 
-This is what makes JobPilot different from every other job bot.
+This is what makes JobPilot different from every other job bot. **It is always-on in every way you
+run the system** — through your agent, the always-on worker, or even the standalone dashboard
+server. There is no supported way to run JobPilot that bypasses self-evolution; it's the point.
 
 Every time it hits something it can't handle — a weird Easy Apply question, a form with no submit
 button, a login-gated ATS — it records an **encounter**: a normalized signature, a running count,
 and a saved **screenshot + HTML snapshot** under `data/evolution/`. Then it:
 
-1. **🪄 Harvests** the answers you've *already* filled on LinkedIn (your real years-of-experience,
-   salary, work-authorization) and reuses them everywhere.
-2. **🙋 Asks you once.** Anything it genuinely can't infer becomes a *“question for you”* in the
-   dashboard — answer it one time, remembered forever (fuzzy-matched across all future applications).
-3. **📈 Reweights itself.** It tracks which search queries and ATS domains actually convert and
+1. **🩹 Tries to self-heal first.** A fire-and-forget heal pass (`attemptSelfHeal`) reasons about
+   the failure signature and attempts a lightweight recovery (re-click a hidden submit, re-open a
+   stale dialog, …) — **without ever blocking the job-hunting pipeline.**
+2. **🪄 Harvests** the answers you've *already* filled on LinkedIn (your real years-of-experience,
+   salary, work-authorization) and reuses them everywhere — fuzzy-matched, so a reworded question
+   reuses the same answer instead of asking you again.
+3. **🙋 Asks you once.** Anything it genuinely can't infer becomes a *“question for you”* in the
+   dashboard — answer it one time, remembered forever. Answers the agent derives itself from your
+   profile are shown under *“🤖 agent answered”* so you can review/override them.
+4. **📈 Reweights itself.** It tracks which search queries and ATS domains actually convert and
    shifts toward what works (UCB bandit), auto-skipping dead ends.
-4. **🔁 Contributes back (on by default).** It files GitHub issues for blockers it discovers and
-   pushes code/doc improvements to this repo — **attributed to you, hard-guarded so it never
-   touches your data.** Toggle it off anytime from the dashboard.
+5. **🔁 Contributes back + reviews PRs (on by default).** A dedicated **evolver** lane — running at
+   the *same priority as job applying* — keeps the fork in sync with `main`, opens PRs for its own
+   fixes, and (on the main repo) **reviews & merges open PRs from *every* contributor**, including
+   other agents' forks. It files GitHub issues for blockers it can't fix.
 
 > Your coding agent reads the auto-generated `data/evolution/PLAYBOOK.md`, patches the relevant
 > module, marks the encounter fixed — and the fix is pushed back for everyone. **The repository
 > literally improves itself, session over session.**
+
+### How contribution works (fork vs. main repo)
+
+- **If your clone is a fork** → the evolver keeps it continuously rebased on `upstream/main`, and
+  opens a **PR to the main repo** for every change. When a PR merges, it **syncs again** so the
+  fork never drifts.
+- **If you own the main repo** → the evolver **reviews and merges every open PR** — from this agent
+  *and* from other contributors' forks. It approves pending fork CI so the security gate can run,
+  merges useful PRs (even forcing past a stuck mechanical auto-merge), resolves conflicts where it
+  can, and closes empty/redundant PRs. **The one gate never bypassed is the CI security/data-safety
+  check** — a failing security gate blocks the merge no matter who opened the PR.
+- Commits are authored as the **GitHub username** (never a real/personal name), with the account's
+  noreply email. Hard-guarded: the push aborts if anything under `data/`, `.env*`, drafts, logs,
+  screenshots, or the DB is ever staged.
 
 ---
 
@@ -86,8 +108,10 @@ period. Here's exactly how an application question gets answered, in order:
    Easy Apply forms — your real numbers, not a model's guess.
 3. **It asks you — once.** Anything it genuinely can't infer becomes a **question for you** in the
    dashboard's 🧠 **Questions** tab. You answer it one time; it's stored and **reused on every
-   future application** (and fuzzy-matched, so a reworded version of the same question still hits).
-   Nothing is submitted on a required field it had to guess.
+   future application** (and fuzzy-matched + stemmed, so a reworded version of the same question
+   still hits — you're not asked twice). Nothing is submitted on a required field it had to guess.
+   Anything the agent *did* answer from your profile shows under **🤖 agent answered** so you can
+   review or override it.
 
 ```
 unknown question ─▶ parked in the Questions tab ─▶ you answer once ─▶ remembered forever
@@ -107,12 +131,17 @@ one-click "log in here" banner, and it resumes automatically once you're back in
 
 - **All four channels working end-to-end** against the live 2026 LinkedIn / ATS DOM — including the
   shadow-DOM Easy Apply modal and the "Connect is hidden under the More menu" profile layout.
-- **A real answer engine** that harvests your prefilled answers, converts currencies/periods for
-  salary questions, handles yes/no work-authorization logic, and escalates the truly-unknown to you.
-- **A concurrent worker** — scout · mailer · applier · connector run in parallel lanes, so scraping
-  never blocks applying and email never blocks Easy Apply.
-- **A pipeline dashboard** with per-lane live status, a 🧠 Questions tab, and a 🧬 Evolution tab that
-  shows every blocker with its screenshot + HTML snapshot.
+- **A real answer engine** that harvests your prefilled answers, reuses them for *similar* questions
+  (fuzzy + stemmed matching), converts currencies/periods for salary, handles yes/no work-auth
+  logic, shows you everything it auto-answered, and escalates only the truly-unknown.
+- **A concurrent, never-stop worker** — scout · mailer · applier · connector · **evolver** run in
+  parallel lanes under a supervisor that auto-restarts any lane that crashes; global crash handlers
+  + process respawn mean one bad lead or page never halts the pipeline.
+- **Self-evolution as a first-class lane** — the `evolver` runs at the same priority as applying:
+  it syncs with `main` + reviews/merges open PRs every ~2 min and contributes every ~10 min.
+- **A modular pipeline dashboard** (`src/dashboard/` partials) with per-lane live status, a 🧠
+  Questions tab (with 🤖 agent-answered review), and a 🧬 Evolution tab showing every blocker with
+  its screenshot + HTML snapshot.
 - **Zero personal data in the codebase** — everything about you lives in `data/` (gitignored).
 
 ---
@@ -131,7 +160,17 @@ cd jobpilot
 
 ### 2. Open the folder in your agent and just talk to it
 
-> *“find and apply to AI jobs”*
+Say something like:
+
+> *“find and apply to AI jobs — and keep self-evolving + contributing PRs while you do”*
+
+You don't have to spell out the self-evolution part — it's always on — but it's a good reminder of
+what the agent will do. Other things you can tell it:
+
+- *“set my location scope to worldwide”* (or `continent` / `country`) — how far to search.
+- *“answer screening questions from my CV where you can, only ask me when you're truly stuck.”*
+- *“review and merge any open PRs, including from other contributors.”*
+- *“keep running and never stop.”*
 
 Because the repo already contains the config your agent looks for, it **auto-discovers** the
 `jobpilot` MCP server and launches it via `start.js` — which self-installs dependencies on first
@@ -172,12 +211,15 @@ applies — reporting live on the dashboard. If a login ever lapses, it shows a 
 ### Prefer the always-on engine? Skip the agent entirely:
 
 ```bash
-npm install && npm run worker
+npm install && npm run worker          # or: npm run worker:forever  (respawns on crash)
 ```
 
-Four concurrent lanes, freshest-first, self-evolving, with the dashboard + Questions tab + a
-**⏹ Stop** button live at **http://127.0.0.1:7788**. Flags: `DRY=1` (scrape only), `RUN_MS=<ms>`
-(time-box). Stop it anytime with the dashboard button or `npm run stop`.
+Five concurrent lanes (scout · mailer · applier · connector · **evolver**), freshest-first,
+self-evolving, with the dashboard + Questions tab + a **⏹ Stop** button live at
+**http://127.0.0.1:7788**. It **never stops on its own**: every lane auto-restarts if it throws,
+global crash handlers keep the process alive, and `worker:forever` respawns the whole process if it
+ever dies. Flags: `DRY=1` (scrape only), `RUN_MS=<ms>` (time-box). The only thing that stops it is
+the dashboard **⏹ Stop** button (or `npm run stop`).
 
 ---
 
@@ -186,9 +228,14 @@ Four concurrent lanes, freshest-first, self-evolving, with the dashboard + Quest
 A local-only UI at **http://127.0.0.1:7788** (bound to localhost):
 
 - **Pipeline** — fresh email leads first, then per-channel queues, newest-posted first, with live per-lane status.
-- **🧠 Questions** — answer anything the agent couldn't, inline. Remembered forever.
+- **🧠 Questions** — answer anything the agent couldn't, inline (remembered forever). A **🤖 agent
+  answered** section shows every answer the agent derived from your profile, with a one-click
+  **override**.
 - **🧬 Evolution** — every open encounter with its screenshot + HTML snapshot, plus the learned-answers table.
 - **Done log / Emails sent / Connects** — a full audit trail with over-contact warnings.
+
+> The UI is built from small partials under `src/dashboard/` (coordinator + `styles.js` +
+> `helpers.js` + `partials/`), so it's easy to modify a single section without touching the rest.
 
 ---
 
@@ -210,18 +257,23 @@ Want to knock one out? See [CONTRIBUTING.md](CONTRIBUTING.md) — these make gre
 
 ```
 jobpilot/
-├── start.js                # ← MCP config points HERE (self-installs, launches Chrome, starts server)
-├── mcp-server.js           # the MCP server (31 fine-grained tools)
+├── start.js                # ← MCP config points HERE (self-installs, launches Chrome, respawns server on crash)
+├── mcp-server.js           # the MCP server (32 fine-grained tools) + always-on self-evolution loop
 ├── AGENTS.md               # the guide your agent reads to drive everything zero-touch
+├── CODING_STANDARDS.md     # conventions for every file (ESM, JSDoc, no personal data, …)
 ├── src/
-│   ├── worker.js           # always-on engine: scout · mailer · applier · connector (concurrent)
-│   ├── evolve.js           # self-evolution memory: encounters · learned answers · strategy bandit
-│   ├── contribute.js       # self-improving loop: files issues + pushes fixes (data-safe)
-│   ├── profile.js          # personalization — read from data/ (gitignored)
+│   ├── worker.js           # always-on engine: scout · mailer · applier · connector · evolver (concurrent, supervised)
+│   ├── evolve.js           # self-evolution memory: encounters · self-heal · learned answers · strategy bandit
+│   ├── evolve-loop.js      # background self-evolution for agent/server mode (stands down while worker is live)
+│   ├── contribute.js       # self-improving loop: syncs, opens/reviews/merges PRs, files issues (data-safe)
+│   ├── profile.js          # personalization + location scope — read from data/ (gitignored)
 │   ├── tracker.js          # jobs DB + dedup guards + channel queues
-│   ├── dashboard.js        # pipeline + Questions + Evolution dashboard
+│   ├── dashboard/          # modular dashboard: index.js (coordinator) + styles + helpers + partials/
 │   ├── server.js           # local web server: onboarding, dashboard, /api/answers, /evidence
 │   └── mcp/                # sources · easyapply · forms · connect · answers · gmail · chrome
+├── scripts/
+│   ├── worker-forever.mjs  # respawns the worker process if it ever dies (never-stop)
+│   └── ci-security-scan.mjs# CI data-safety gate (blocks any PR that stages data/creds)
 ├── data/                   # EVERYTHING personal lives here — gitignored
 └── docs/demo.gif
 ```
