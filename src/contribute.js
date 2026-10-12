@@ -22,6 +22,44 @@ const git = (...a) => run('git', a, { cwd: ROOT }).then(r => r.stdout.trim())
   .catch(e => { throw new Error((e.stderr || e.stdout || e.message).slice(0, 300)); });
 const gh  = (...a) => run('gh',  a, { cwd: ROOT }).then(r => r.stdout.trim());
 
+// ── Author identity ─────────────────────────────────────────────────────────
+// Commits are attributed to the GitHub USERNAME (e.g. "maazbin"), NOT a real name or a
+// random name, using the account's noreply email so no personal email is ever committed.
+let _ident = null;
+/**
+ * Resolve the commit identity from the authenticated GitHub account.
+ * Returns { name: <login>, email: <id>+<login>@users.noreply.github.com }.
+ * Cached for the process. Falls back to the local git user if gh is unavailable.
+ * @returns {Promise<{name:string, email:string}>}
+ */
+async function ghIdentity() {
+  if (_ident) return _ident;
+  try {
+    const login = await gh('api', 'user', '--jq', '.login');
+    const id    = await gh('api', 'user', '--jq', '.id');
+    _ident = { name: login, email: `${id}+${login}@users.noreply.github.com` };
+  } catch {
+    const name  = await git('config', 'user.name').catch(() => 'jobpilot');
+    const email = await git('config', 'user.email').catch(() => 'jobpilot@users.noreply.github.com');
+    _ident = { name, email };
+  }
+  return _ident;
+}
+
+/**
+ * Commit staged changes authored AND committed as the GitHub username (via -c overrides),
+ * so attribution is the actual username regardless of local/global git config.
+ * @param {string} message
+ */
+async function commitAs(message) {
+  const id = await ghIdentity();
+  await git(
+    '-c', `user.name=${id.name}`,
+    '-c', `user.email=${id.email}`,
+    'commit', '--author', `${id.name} <${id.email}>`, '-m', message,
+  );
+}
+
 // ── Allowlist / denylist ──────────────────────────────────────────────────────
 const ALLOW = [
   /^src\//, /^docs\//, /^scripts\//, /^\.github\//, /^[^/]+\.md$/,
@@ -146,7 +184,7 @@ export async function contributeViaPR(message) {
 
     await git('checkout', '-b', branch);
     await safeStage();                             // re-stage + re-check on the new branch
-    await git('commit', '-m', message);
+    await commitAs(message);                       // author as the GitHub username
     await git('push', '-u', 'origin', branch);
 
     const head = isFork ? `${owner}:${branch}` : branch;
@@ -168,8 +206,10 @@ export async function contributeViaPR(message) {
       '--body', body,
       '--label', 'self-evolve',
     );
-    // Enable auto-merge so the PR self-merges once CI passes
-    await gh('pr', 'merge', '--auto', '--squash', url).catch(() => {});
+    // Enable auto-merge once CI passes. Use a MERGE commit (not squash) so the author line
+    // we set — the GitHub username — is preserved verbatim (squash lets GitHub rewrite the
+    // author to the account's profile display name).
+    await gh('pr', 'merge', '--auto', '--merge', url).catch(() => {});
     return { pr: url, pushed: true, files };
   } catch (e) {
     return { pushed: false, reason: e.message };
@@ -211,7 +251,7 @@ export async function reviewAndMergePRs() {
         continue;
       }
       try {
-        await gh('pr', 'merge', '--squash', '--auto', String(pr.number), '--repo', info.upstream);
+        await gh('pr', 'merge', '--merge', '--auto', String(pr.number), '--repo', info.upstream);
         merged.push(pr.url);
       } catch {
         skipped.push(pr.url);
