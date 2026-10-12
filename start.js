@@ -92,7 +92,13 @@ async function ensureChrome() {
 // ── 4. Hand off to the MCP server over the same stdio ─────────────────────────
 async function main() {
   ensureDeps();
-  await ensureChrome();
+  // Skip auto-launching Chrome if the user set JOBPILOT_NO_AUTOCHROME=1.
+  // Chrome will only launch when a tool (launch_chrome / ensureChrome) explicitly asks for it.
+  if (process.env.JOBPILOT_NO_AUTOCHROME !== '1') {
+    await ensureChrome();
+  } else {
+    log('JOBPILOT_NO_AUTOCHROME=1 — skipping automatic Chrome launch (call launch_chrome when ready).');
+  }
   log('Starting MCP server …');
 
   // NEVER STOP: supervise the MCP server. A clean exit (code 0 — the agent closed the
