@@ -311,7 +311,26 @@ $('save').onclick = async () => {
 </div></body></html>`;
 }
 
-export function startServer() {
+/** Probe whether a JobPilot dashboard server is already live on a port. */
+function dashboardAlreadyOn(port) {
+  return new Promise(resolve => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 800 }, res => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+export async function startServer() {
+  // Reuse an existing JobPilot server on the default port instead of spawning a duplicate on a
+  // new port — duplicates caused the dashboard to POST answers to a stale instance (UI not
+  // updating). If the default port already serves our dashboard, just use it.
+  if (await dashboardAlreadyOn(PORT)) {
+    console.error(`[job-agent] reusing existing dashboard already live at http://127.0.0.1:${PORT}`);
+    return PORT;
+  }
   return new Promise((resolve) => {
     let port = PORT;
     let attempts = 0;
