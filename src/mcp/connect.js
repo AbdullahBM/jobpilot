@@ -85,14 +85,29 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     }
     if (dryRun) { await page.keyboard.press('Escape').catch(() => {}); await SLEEP(400); await page.getByRole('button', { name: /discard/i }).first().click({ timeout: 2500 }).catch(() => {}); await page.close(); return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached send' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' }; }
 
-    const send = page.getByRole('button', { name: usedNote ? /^send( invitation)?$/i : /send without a note|^send( invitation)?$/i }).first();
-    if (!(await send.isVisible().catch(() => false))) {
+    // The invite dialog (role=dialog / artdeco modal, or the 2026 native <dialog>) carries the
+    // Send control. Scope to it so we don't match a stray "Send" elsewhere (messaging/video),
+    // and give it a moment to mount after the Connect/Add-note click.
+    const inviteDlg = page.locator(
+      'div[role="dialog"]:has-text("invitation"), div[data-testid="dialog"], .artdeco-modal, dialog[open]'
+    ).filter({ has: page.getByRole('button', { name: /send|add a note/i }) }).first();
+    await inviteDlg.waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    const SEND_RE = /send without a note|send invitation|send now|^send$/i;
+    const dlgScope = (await inviteDlg.count().catch(() => 0)) ? inviteDlg : page;
+    let send = dlgScope.getByRole('button', { name: SEND_RE }).first();
+    // short retry: the button can be briefly disabled/animating right after the dialog opens
+    let sendVisible = false;
+    for (let i = 0; i < 4 && !sendVisible; i++) { sendVisible = await send.isVisible().catch(() => false); if (!sendVisible) await SLEEP(600); }
+    if (!sendVisible) {
       // some profiles send immediately on Connect click (no dialog)
       if (await mainCol(page, /^pending$/i)) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent (no note dialog)' }; }
       await encounter('connect', 'send button not found in invite dialog', { url: profileUrl, page });
       await page.close(); return { ok: false, result: 'error', detail: 'send button not found in invite dialog' };
     }
-    await send.click();
+    await send.scrollIntoViewIfNeeded().catch(() => {});
+    let sent = await send.click({ timeout: 5000 }).then(() => true).catch(() => false);
+    if (!sent) sent = await send.click({ force: true, timeout: 3000 }).then(() => true).catch(() => false);
+    if (!sent) await send.evaluate(el => el.click()).catch(() => {});
     await SLEEP(2200);
     const txt = await page.locator('body').innerText().catch(() => '');
     if (/weekly invitation limit|reached the weekly|you.?ve reached/i.test(txt)) { await page.close(); return { ok: false, result: 'limit', detail: 'LinkedIn weekly invitation limit reached' }; }
