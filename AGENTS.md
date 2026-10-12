@@ -60,15 +60,18 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
    "done" for any change you make to the code:
    - **If this is a FORK:** keep the branch **continuously in sync** with `upstream/main` (rebase),
      and for every change you make, **open a PR to the main repo**. When a PR is merged upstream,
-     **sync again** so the fork tracks the newest version. Never let the fork drift.
+     **sync again immediately** so the fork tracks the newest version. Never let the fork drift.
+     The cycle is: change → PR → wait for merge → sync → repeat.
    - **If this is the MAIN repo:** keep **reviewing and merging open `self-evolve` PRs** that have
      passed CI, then fast-forward local `main`. Do this on a loop — new PRs should not sit unmerged.
    - **Every change the agent makes to code/docs must land on GitHub** via this flow — call
      `contribute_improvements` after `resolve_encounter`, or let the worker's ~20-min loop do it.
-     Do not consider a code change complete until it is pushed / PR-opened.
+     Do not consider a code change complete until it is pushed / PR-opened **and the fork has been
+     re-synced after the PR merges**.
    - `contribute_improvements` (→ `contributeRound()` in `src/contribute.js`): **syncs upstream
      first** (pulls the newest version), files GitHub issues for recurring blockers, then —
      fork → opens a cross-fork PR to upstream; main → reviews + merges open self-evolve PRs.
+     **Call it again after a PR is accepted** to pull the merge commit back in.
    - It is **hard-guarded** — aborts if anything under `data/`, `.env*`, drafts, logs, screenshots,
      or the DB is ever staged. A CI **security gate** (`scripts/ci-security-scan.mjs`) re-checks this
      on every PR, and branch protection won't merge until it passes. Clean `self-evolve` PRs
@@ -80,8 +83,20 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
 
 ## Rules
 
-- **🔁 EVERY code/doc change MUST be reflected on GitHub — no exceptions.** This is a hard rule,
-  not a nice-to-have:
+- **🔁 EVERY code/doc change MUST be contributed back to the original repo — no exceptions.**
+  This is the single hardest rule in this file. A change that isn't on GitHub doesn't exist.
+  Follow this exact lifecycle for every edit, fix, or improvement:
+
+  1. **Make the change** (fix encounter, improve a module, update docs, anything).
+  2. **Call `contribute_improvements` immediately** — this syncs upstream first, then opens a
+     cross-fork PR (fork) or merges an open PR (main repo). Do not skip this step.
+  3. **Wait for the PR to be accepted/merged upstream.** Monitor open PRs.
+  4. **After the PR merges, sync again** — call `contribute_improvements` (or `git pull --rebase
+     upstream main`) so the local fork tracks the newest upstream `main`. Never let the fork sit
+     behind after a merge. This sync step is mandatory, not optional housekeeping.
+  5. **Repeat** — the loop never ends. Every session, every change, every fix.
+
+  Specific rules by repo type:
   - **Fork** → stay in sync with `upstream/main` (rebase) at all times, and open a **PR to the
     main repo** for every change. When your PR (or any PR) merges upstream, **sync again** to the
     newest version. The fork must never fall behind main.
@@ -95,11 +110,10 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
     hanging. Close empty/redundant PRs (0 changes). The ONE thing never bypassed is the `review`
     security/data-safety gate — a failing security gate blocks the merge even for a useful-looking
     PR, no matter who opened it.
-  - A change is only "done" once it's pushed / its PR is opened. After any `resolve_encounter` or
-    code edit, call `contribute_improvements` (or rely on the worker's ~20-min loop). It always
-    **pulls the newest upstream version first**, then contributes. Hard-guarded against ever
-    committing `data/`, `.env*`, or credentials.
-- **Never re-email / re-apply / re-connect.** `check_already_actioned` before outreach; the DB in
+  - A change is only "done" once it's pushed / its PR is opened AND a post-merge sync has been
+    run. After any `resolve_encounter` or code edit, call `contribute_improvements` (or rely on
+    the worker's ~20-min loop). It always **pulls the newest upstream version first**, then
+    contributes. Hard-guarded against ever committing `data/`, `.env*`, or credentials.- **Never re-email / re-apply / re-connect.** `check_already_actioned` before outreach; the DB in
   `data/jobs.db` preserves history across runs and across different agents.
 - **Freshest first.** Prefer leads posted in the last 24h; the queues are already ordered that way.
 - **Respect limits** in the profile (daily caps, max attempts, timeouts). The worker enforces them.
