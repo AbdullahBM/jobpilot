@@ -1,0 +1,16 @@
+import { initDB, getDB, save } from '../src/tracker.js';
+import { askLater } from '../src/evolve.js';
+import fs from 'fs';
+process.env.JOB_AGENT_PORT = '7788';
+await initDB();
+askLater('What is your expected monthly salary in PKR for the __q1__ role?');
+askLater('Are you willing to relocate for __q1__?', ['Yes', 'No']);
+const { writeDash } = await import('../src/dashboard.js');
+writeDash();
+const h = fs.readFileSync(new URL('../dashboard.html', import.meta.url), 'utf8');
+console.log('recommended hint shown:', h.includes('💡 recommended'));
+console.log('rec option marked (opt rec):', h.includes('opt rec'));
+console.log('prefilled salary textarea:', /ai_[^"]*__q1__[^>]*>500000/.test(h.replace(/\s+/g, ' ')) || h.includes('>500000</textarea>'));
+getDB().run("DELETE FROM answers WHERE question LIKE '%__q1__%'"); save();
+console.log('cleaned up');
+process.exit(0);

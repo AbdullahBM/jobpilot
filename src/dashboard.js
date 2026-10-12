@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import { rows, one, initDB } from './tracker.js';
 import { DASH, DATA } from './config.js';
 import { getProfile } from './profile.js';
+import { recommendAnswer } from './mcp/answers.js';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATUS = {
@@ -119,10 +120,19 @@ export function writeDash() {
   try { learned = q(`SELECT * FROM answers WHERE pending=0 AND answer!='' ORDER BY uses DESC, updated_at DESC LIMIT 100`); } catch {}
   const pendRows = pend.map(a => {
     const opts = (a.options || '').split(' | ').filter(Boolean);
-    const field = opts.length && opts.length <= 6
-      ? opts.map(o => `<button class="opt" onclick="ans('${esc(a.qkey)}','${esc(o)}')">${esc(o)}</button>`).join(' ')
-      : `<input class="ai" id="ai_${esc(a.qkey)}" placeholder="type answer…"><button class="opt" onclick="ans('${esc(a.qkey)}',document.getElementById('ai_${esc(a.qkey)}').value)">save</button>`;
-    return `<tr><td class="role" style="max-width:520px">${esc(a.question)}<div class="dim">asked ${a.seen}×</div></td><td>${field}</td></tr>`;
+    let rec = { value: '', basis: '' };
+    try { rec = recommendAnswer(a.question, opts) || rec; } catch {}
+    const recHint = rec.basis ? `<div class="dim" style="margin-top:4px">💡 recommended (${esc(rec.basis)})</div>` : '';
+    let field;
+    if (opts.length && opts.length <= 6) {
+      // mark the recommended option
+      field = opts.map(o => `<button class="opt${o === rec.value ? ' rec' : ''}" onclick="ans('${esc(a.qkey)}','${esc(o)}')">${esc(o)}${o === rec.value ? ' ✓' : ''}</button>`).join(' ');
+    } else {
+      // pre-fill the input with the recommendation; user edits or accepts
+      const v = esc(rec.value || '');
+      field = `<textarea class="ai" id="ai_${esc(a.qkey)}" rows="${rec.value && rec.value.length > 60 ? 3 : 1}" placeholder="type answer…">${v}</textarea><button class="opt" onclick="ans('${esc(a.qkey)}',document.getElementById('ai_${esc(a.qkey)}').value)">save</button>`;
+    }
+    return `<tr><td class="role" style="max-width:520px">${esc(a.question)}<div class="dim">asked ${a.seen}×</div>${recHint}</td><td>${field}</td></tr>`;
   }).join('');
   const encRows = enc.map(e => `<tr><td class="dim">#${e.id}</td><td><b>${esc(e.area)}</b></td><td class="dim">×${e.count}</td><td>${esc(e.domain)}</td><td class="role" style="max-width:460px">${esc(e.signature)}</td><td>${e.snapshot ? `<a href="/evidence/${esc(e.snapshot.replace(/\\\\/g, '/').split('/').pop())}.png" target="_blank">shot</a> · <a href="/evidence/${esc(e.snapshot.replace(/\\\\/g, '/').split('/').pop())}.html" target="_blank">html</a>` : ''}</td><td>${e.sample_url ? link(e.sample_url) : ''}</td></tr>`).join('');
   const learnRows = learned.map(a => `<tr><td class="role" style="max-width:460px">${esc(a.question)}</td><td class="em">${esc(a.answer)}</td><td class="dim">${esc(a.source)}</td><td class="dim">${a.uses}×</td></tr>`).join('');
@@ -158,7 +168,8 @@ td{padding:6px 9px;border-bottom:1px solid #16203a;vertical-align:top}tr:hover t
 .banner{background:#111a2e;border:1px solid #1e293b;border-radius:8px;padding:9px 14px;margin-bottom:14px;font-size:12px}
 input.s{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:6px;width:320px;margin-bottom:8px}
 .opt{background:#1e293b;color:#e2e8f0;border:1px solid #3b82f6;border-radius:6px;padding:4px 10px;margin:2px;cursor:pointer;font-weight:600}
-.opt:hover{background:#3b82f6}.ai{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:4px 8px;border-radius:6px;width:260px;margin-right:6px}
+.opt:hover{background:#3b82f6}.ai{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:4px 8px;border-radius:6px;width:420px;margin-right:6px;vertical-align:middle;font-family:inherit}
+.opt.rec{background:#14532d;border-color:#22c55e;color:#bbf7d0}
 .qbanner{background:#1a1407;border:1px solid #a16207;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#fcd34d}
 .loginbanner{background:#2a0a0a;border:1px solid #b91c1c;border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:14px;color:#fecaca}
 .loginbtn{display:inline-block;background:#ef4444;color:#fff;font-weight:700;padding:5px 14px;border-radius:7px;text-decoration:none;margin:0 4px}

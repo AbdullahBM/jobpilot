@@ -10,10 +10,10 @@
   "scripts": {
     "start": "node start.js",
     "mcp": "node start.js",
-    "server": "node mcp-server.js",
-    "doctor": "node src/doctor.js",
+    "server": "node scripts/ensure.mjs && node mcp-server.js",
+    "doctor": "node scripts/ensure.mjs && node src/doctor.js",
     "dashboard": "node src/dashboard.js",
-    "worker": "node src/worker.js",
+    "worker": "node scripts/ensure.mjs && node src/worker.js",
     "stop": "node scripts/stop.mjs",
     "test:browser": "node scripts/test-browser.mjs",
     "test:mcp": "node scripts/test-mcp.mjs"

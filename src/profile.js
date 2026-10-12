@@ -21,6 +21,19 @@ const DEFAULT_PROFILE = {
   email: '',
   phone: '',
   location: '',
+  country: '',
+
+  // Context the answer engine uses so it rarely has to ask you
+  headline: '',          // e.g. "Senior Software Engineer"
+  currentTitle: '',
+  currentCompany: '',
+  yearsExperience: 0,    // number
+  education: '',         // e.g. "Bachelor"
+  skills: [],            // ["Python","FastAPI","AWS",…]
+  summary: '',           // short professional summary
+  extra: '',             // FREE-FORM: anything else useful for the agent (context, preferences, notes)
+  salary: {},            // { amount, currency, period }  e.g. {amount:500000,currency:"PKR",period:"month"}
+  workAuth: {},          // { needsSponsorship:bool, authorizedIn:["Pakistan"], willingToRelocate:bool }
 
   // Files
   cvPath: '',            // absolute path to CV/resume PDF
@@ -90,6 +103,8 @@ function load() {
       answers: { ...(saved.answers || {}) },
       limits: { ...DEFAULT_PROFILE.limits, ...(saved.limits || {}) },
       consent: { ...DEFAULT_PROFILE.consent, ...(saved.consent || {}) },
+      salary: { ...DEFAULT_PROFILE.salary, ...(saved.salary || {}) },
+      workAuth: { ...DEFAULT_PROFILE.workAuth, ...(saved.workAuth || {}) },
     };
   } catch {
     return { ...DEFAULT_PROFILE };
@@ -117,7 +132,10 @@ export function updateProfile(patch = {}) {
     limits:      { ...p.limits,      ...(patch.limits || {}) },
     smtp:        { ...p.smtp,        ...(patch.smtp || {}) },
     consent:     { ...p.consent,     ...(patch.consent || {}) },
+    salary:      { ...p.salary,      ...(patch.salary || {}) },
+    workAuth:    { ...p.workAuth,    ...(patch.workAuth || {}) },
   };
+  if (Array.isArray(patch.skills)) merged.skills = patch.skills;
   if (Array.isArray(patch.projects)) merged.projects = patch.projects;
   if (Array.isArray(patch.loggedInSources)) merged.loggedInSources = patch.loggedInSources;
   return persist(merged);
