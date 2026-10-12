@@ -126,6 +126,38 @@ async function fillPage(page, dlg, ctx) {
     if (process.env.DEBUG_EA) console.log('  radio checked:', okRadio);
     ctx.used.push(g[0].q);
   }
+
+  // Checkbox GROUPS (multi-option "select all that apply" / single-select questions).
+  for (const [q, g] of Object.entries(cbGroups)) {
+    if (g.length < 2 || !q || q.length <= 8) continue;       // standalone consent handled inline
+    if (g.some(c => c.checked)) { if (q.length > 8) learn(q, g.filter(c => c.checked).map(c => c.optLabel).join(', '), 'harvested'); continue; }
+    const labels = g.map(c => c.optLabel).filter(Boolean);
+    // Pick the matching option(s) from the user's profile/answers; if nothing matches, prefer a
+    // safe neutral option ("Other"/"None") so a required group never blocks the page, else ask.
+    let picks = [];
+    const choice = choiceAnswer(q, labels);
+    if (choice) picks = [choice];
+    if (!picks.length) { const other = labels.find(l => /^(other|none|n\/?a|prefer not)/i.test(l)); if (other) picks = [other]; }
+    if (process.env.DEBUG_EA) console.log('CBGROUP', JSON.stringify({ q, opts: labels, picks }));
+    if (!picks.length) {
+      if (g[0].required) { ctx.unanswered.add(q); askLater(q, labels); }
+      continue;
+    }
+    for (const pick of picks) {
+      // Click the role=checkbox WRAPPER (hidden input ignores synthetic clicks), same as radios.
+      const esc = pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const wrap = dlg.locator('[role="checkbox"]').filter({ hasText: new RegExp(`^\\s*${esc}\\s*$`, 'i') }).first();
+      let okCb = false;
+      if (await wrap.count().catch(() => 0)) { await wrap.click({ timeout: 3000 }).catch(() => {}); okCb = await wrap.getAttribute('aria-checked').then(v => v === 'true').catch(() => false); }
+      if (!okCb) {
+        const f = g.find(x => x.optLabel === pick) || g[0];
+        const loc = page.locator(`[data-ja="${f.id}"]`);
+        await loc.locator('xpath=ancestor::*[@role="checkbox"][1]').click({ timeout: 2500 }).catch(() => {});
+        await loc.check({ force: true }).catch(() => {});
+      }
+    }
+    ctx.used.push(q);
+  }
 }
 
 async function discard(page) {
