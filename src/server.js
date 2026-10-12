@@ -196,6 +196,10 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
     <div><label>Phone</label><input type="text" id="phone" value="${p.phone || ''}"></div>
     <div><label>Location</label><input type="text" id="location" value="${p.location || ''}"></div>
   </div>
+  <div class="row">
+    <div><label>Headline / current title</label><input type="text" id="headline" value="${p.headline || p.currentTitle || ''}" placeholder="Senior Software Engineer"></div>
+    <div><label>Years of experience</label><input type="text" id="years" value="${p.yearsExperience || ''}" placeholder="5"></div>
+  </div>
 </div>
 
 <div class="card">
@@ -214,16 +218,39 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
   <h2>🎯 What to look for</h2>
   <label>Target roles (comma-separated)</label>
   <input type="text" id="roles" value="${(p.preferences?.roles || []).join(', ')}" placeholder="AI Engineer, ML Engineer, Backend Engineer">
+  <label>Key skills (comma-separated)</label>
+  <input type="text" id="skills" value="${(p.skills || []).join(', ')}" placeholder="Python, FastAPI, AWS, LLM, RAG">
   <label>Skip (comma-separated)</label>
   <input type="text" id="skip" value="${(p.preferences?.skip || []).join(', ')}" placeholder="junior, intern, sales">
   <label>Sites you're logged into (comma-separated)</label>
-  <input type="text" id="sources" value="${(p.loggedInSources || []).join(', ')}" placeholder="linkedin, indeed, glassdoor, gmail">
+  <input type="text" id="sources" value="${(p.loggedInSources || []).join(', ')}" placeholder="linkedin, gmail">
+</div>
+
+<div class="card">
+  <h2>💰 The things the agent should never guess</h2>
+  <div class="sub" style="margin:-6px 0 10px">So it can answer screening questions without pausing to ask you.</div>
+  <div class="row">
+    <div><label>Expected salary — amount</label><input type="text" id="salAmount" value="${p.salary?.amount || ''}" placeholder="500000"></div>
+    <div><label>Currency / period</label><input type="text" id="salCur" value="${(p.salary?.currency || '') + (p.salary?.period ? ' / ' + p.salary.period : '')}" placeholder="PKR / month"></div>
+  </div>
+  <div class="row">
+    <div><label>Need visa sponsorship?</label><input type="text" id="sponsor" value="${p.workAuth?.needsSponsorship === true ? 'yes' : p.workAuth?.needsSponsorship === false ? 'no' : ''}" placeholder="no"></div>
+    <div><label>Authorized to work in</label><input type="text" id="authIn" value="${(p.workAuth?.authorizedIn || []).join(', ')}" placeholder="Pakistan"></div>
+  </div>
+  <label>Notice period</label>
+  <input type="text" id="notice" value="${(p.answers || {})['notice period'] || ''}" placeholder="2 weeks">
+</div>
+
+<div class="card">
+  <h2>📝 Anything else useful (free-form)</h2>
+  <div class="sub" style="margin:-6px 0 10px">Context, preferences, a short pitch, constraints — the agent reads this when answering questions and writing outreach.</div>
+  <textarea id="extra" rows="4" placeholder="e.g. I prefer product companies over agencies. I'm strongest in backend + LLM systems. Open to contract. My pitch: I build the system around the model…">${p.extra || p.summary || ''}</textarea>
 </div>
 
 <div class="card">
   <h2>💬 Common application answers (optional)</h2>
   <label>One per line, as <code>question = answer</code></label>
-  <textarea id="answers" rows="4" placeholder="years of python = 4&#10;visa = Yes, I need sponsorship&#10;notice period = 2 weeks">${Object.entries(p.answers || {}).map(([k, v]) => k + ' = ' + v).join('\n')}</textarea>
+  <textarea id="answers" rows="4" placeholder="years of python = 5&#10;visa = No, I don't need sponsorship&#10;notice period = 2 weeks">${Object.entries(p.answers || {}).filter(([k]) => k !== 'notice period').map(([k, v]) => k + ' = ' + v).join('\n')}</textarea>
 </div>
 
 <button class="btn" id="save">Save & open dashboard</button>
@@ -249,8 +276,17 @@ $('save').onclick = async () => {
   const parseList = s => s.split(',').map(x => x.trim()).filter(Boolean);
   const answers = {};
   $('answers').value.split('\\n').forEach(line => { const i = line.indexOf('='); if (i > 0) answers[line.slice(0, i).trim()] = line.slice(i + 1).trim(); });
+  if ($('notice').value.trim()) answers['notice period'] = $('notice').value.trim();
+  const salCur = $('salCur').value.split('/').map(x => x.trim());
+  const sponsorVal = $('sponsor').value.trim().toLowerCase();
   const patch = {
     name: $('name').value, email: $('email').value, phone: $('phone').value, location: $('location').value,
+    headline: $('headline').value, currentTitle: $('headline').value,
+    yearsExperience: parseInt($('years').value) || 0,
+    skills: parseList($('skills').value),
+    extra: $('extra').value,
+    salary: { amount: parseInt($('salAmount').value) || 0, currency: (salCur[0] || '').toUpperCase(), period: salCur[1] || 'month' },
+    workAuth: { needsSponsorship: sponsorVal === 'yes' ? true : sponsorVal === 'no' ? false : undefined, authorizedIn: parseList($('authIn').value) },
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
     preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value) },
     loggedInSources: parseList($('sources').value),

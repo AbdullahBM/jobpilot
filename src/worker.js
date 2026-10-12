@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import { launchChrome } from './mcp/chrome.js';
+import { verifyLogins } from './agent/browser.js';
 import { initDB, upsertJobs, setStatus, setFields, bumpAttempt, logEmail, log, getJob,
   alreadyEmailed, alreadyApplied, alreadyConnected, logConnect, rows, doneToday } from './tracker.js';
 import { liPosts, liJobs, hnHiring, redditHiring, publicBoards, relToIso } from './mcp/sources.js';
@@ -131,8 +132,8 @@ async function scout() {
         beat('scout', `LI jobs: ${jq}`);
         for (const geoId of ['92000000', '101022442']) { // Worldwide, Pakistan
           const rj = await liJobs(jq, { easyOnly: true, tpr: 86400, geoId, pages: 1 });
-          if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); }
-          else if (notLoggedIn(rj.detail)) flagLogin('LinkedIn', 'LinkedIn session expired while scraping jobs');
+          if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); clearLogin('LinkedIn'); }
+          else if (notLoggedIn(rj.detail)) flagLogin('LinkedIn', 'Please log into LinkedIn in the JobPilot Chrome window — scraping is paused until you do');
           await SLEEP(2500);
           if (!running()) break;
         }
@@ -208,7 +209,7 @@ async function applier() {
           flagLogin('LinkedIn', 'LinkedIn security check — open LinkedIn and complete the check / re-login');
           continue; // don't burn this lead's attempt on a throttle
         }
-        if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; }
+        if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; clearLogin('LinkedIn'); }
         else if (r.result === 'no_easy_apply') { if (r.externalUrl) setFields(j.url, { channel: 'form', apply_url: r.externalUrl }); else setStatus(j.url, 'skipped', 'no Easy Apply / external'); }
         else if (r.result === 'needs_answers') setStatus(j.url, 'needs_manual', r.detail);
         else if (r.result === 'closed') setStatus(j.url, 'skipped', 'closed');
@@ -248,7 +249,7 @@ async function connector() {
     if (DRY) { say('connector', `DRY → ${j.poster_name}`); setStatus(j.url, 'connected', 'DRY'); await jitter(PACE.connector); continue; }
     beat('connector', `🔗 ${j.poster_name}`);
     const r = await connect({ profileUrl: j.poster_url, posterName: j.poster_name, role: j.role, company: j.company });
-    if (/^connected/.test(r.result)) { setStatus(j.url, 'connected', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, r.note || '', 'connected'); }
+    if (/^connected/.test(r.result)) { setStatus(j.url, 'connected', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, r.note || '', 'connected'); clearLogin('LinkedIn'); }
     else if (/already/.test(r.result)) { setStatus(j.url, 'skipped', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, '', 'pending'); }
     else if (r.result === 'limit') { connectPaused = true; say('connector', 'weekly invite limit — pausing'); }
     else if (r.result === 'no_connect') setStatus(j.url, 'skipped', r.detail);
@@ -262,9 +263,21 @@ async function connector() {
 
 // ── dashboard + playbook + self-contribution refresher ──────────────────────────
 async function refresher() {
-  let lastContribute = 0;
+  let lastContribute = 0, lastLoginCheck = 0;
   while (running()) {
     try { writeDash(); writePlaybook(); } catch {}
+    // Reconcile stale login banners with reality: if a site is FLAGGED but actually logged in
+    // (the flag came from a transient failure), re-verify the real session and clear it so the
+    // dashboard never nags you after you're already in. Only runs while a banner is up.
+    if (!DRY && state.loginNeeded && Object.keys(state.loginNeeded).length && Date.now() - lastLoginCheck > 60000) {
+      lastLoginCheck = Date.now();
+      try {
+        const v = await verifyLogins();
+        if (v.linkedin) clearLogin('LinkedIn');
+        if (v.gmail) clearLogin('Gmail');
+        if (v.linkedin || v.gmail) { writeDash(); say('main', `login reconciled → LinkedIn:${v.linkedin} Gmail:${v.gmail}`); }
+      } catch {}
+    }
     // Every ~20 min: contribute improvements back to the public repo (issues + allowlisted
     // code/doc changes). ON by default; hard-guarded against ever committing data/ or creds.
     if (!DRY && getProfile().consent?.autoContribute !== false && Date.now() - lastContribute > 20 * 60000) {
@@ -285,6 +298,10 @@ async function refresher() {
 try { fs.rmSync(STOPFILE, { force: true }); } catch {}   // clear any stale stop flag
 await launchChrome();
 await initDB();
+// Keep the repo branch in sync with the main repo on startup (fork → rebase on upstream).
+if (!DRY && getProfile().consent?.autoContribute !== false) {
+  try { const { syncBranch } = await import('./contribute.js'); const s = await syncBranch(); say('main', `branch sync: ${s.synced ? 'in sync with ' + (s.upstream || 'origin') : 'skipped (' + (s.reason || '') + ')'}`); } catch {}
+}
 const uiPort = await startServer();           // dashboard + Questions + /api/answers + /evidence + /api/stop
 process.env.JOB_AGENT_PORT = String(uiPort || 7788);
 say('main', `worker start${DRY ? ' (DRY)' : ''} — concurrent lanes: scout · mailer · applier · connector`);

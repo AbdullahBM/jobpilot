@@ -104,10 +104,32 @@ export function choiceAnswer(question, options) {
 }
 
 export function coverText(p = getProfile()) {
-  const hook = (p.answers || {})['cover hook'] || p.summary || 'I build and ship production software end to end.';
+  const hook = (p.answers || {})['cover hook'] || p.summary || p.extra || 'I build and ship production software end to end.';
   const proj = (p.projects || []).slice(0, 3).map(x => `${x.name} (${x.blurb})`).join('; ');
   const yrs = textAnswer('years of experience');
   const skills = (p.skills || []).slice(0, 6).join(', ');
   return [hook, proj && `Recent work: ${proj}.`, (yrs || skills) && `${yrs ? yrs + '+ years' : 'Experience'}${skills ? ' across ' + skills : ''}.`,
     p.links?.portfolio && `Portfolio: ${p.links.portfolio}`, p.links?.github && `GitHub: ${p.links.github}`].filter(Boolean).join(' ').slice(0, 1400);
+}
+
+/**
+ * Suggest an answer for a question the agent is about to ask the user, so the dashboard can
+ * pre-fill it. Pulls from the exact same resolution the agent uses (learned → profile → rules),
+ * then falls back to profile context (summary/extra, cover hook) for free-text questions.
+ * Returns { value, basis } — basis explains where it came from, '' when there's no good guess.
+ */
+export function recommendAnswer(question, options = []) {
+  const p = getProfile();
+  const q = (question || '').toLowerCase();
+  if (Array.isArray(options) && options.length) {
+    const c = choiceAnswer(question, options);
+    return c ? { value: c, basis: 'suggested from your profile' } : { value: '', basis: '' };
+  }
+  const t = textAnswer(question);
+  if (t != null && t !== '') return { value: String(t), basis: 'from your profile' };
+  if (/why|motivat|interest|about yourself|cover|summary|tell us|describe|experience with|how would/i.test(q)) {
+    return { value: coverText(p), basis: 'drafted from your projects + summary (edit before sending)' };
+  }
+  if (p.extra) return { value: p.extra.slice(0, 300), basis: 'from the free-form info you provided' };
+  return { value: '', basis: '' };
 }
