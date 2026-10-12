@@ -142,11 +142,17 @@ pressing **⏹ Stop** (which writes `data/.stop` and the worker exits cleanly).
 
 **Agent-only mode also self-evolves.** When the agent is driving through the MCP server with no
 worker running, the server runs a **background evolution loop** (`src/evolve-loop.js`) that keeps
-the dashboard fresh and, on the same ~10-/~20-min cadence, syncs with main + opens/reviews PRs —
+the dashboard fresh and, on the same ~2-/~10-min cadence, syncs with main + opens/reviews PRs —
 so self-evolution + recontribution happen automatically even without `npm run worker`. It
 **stands down automatically while the worker is live** (detected via the worker heartbeat in
-`data/worker-state.json`) so the two never double-contribute. Disable with
-`JOBPILOT_MCP_AUTOEVOLVE=0`.
+`data/worker-state.json`) so the two never double-contribute.
+
+**Self-evolution is always-on in EVERY entrypoint — never run anything "manually" that bypasses
+it.** The MCP server (`node start.js` / `node mcp-server.js`), the worker (`npm run worker` /
+`npm run worker:forever`), and even the standalone dashboard server (`node src/server.js`) all
+start the self-evolution loop. There is no supported way to run the system without it — the
+self-evolving concept is the point. The only gates are on the CONTRIBUTION step (your data-safety
+consent toggle, the worker stand-down, and CI); the loop itself always runs.
 
 ## Tools (31)
 

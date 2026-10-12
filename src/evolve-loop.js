@@ -8,7 +8,9 @@
 // data/worker-state.json), THIS loop stands down and lets the worker own the contribute loop —
 // so you never get two processes opening redundant PRs at once.
 //
-// Disable entirely with env JOBPILOT_MCP_AUTOEVOLVE=0.
+// Self-evolution is CORE and always-on: the loop cannot be silently bypassed. The only gates
+// are on the CONTRIBUTION step (the user's data-safety consent toggle, the worker stand-down,
+// and CI) — never on whether the loop runs.
 import fs from 'fs';
 import path from 'path';
 import { DATA } from './config.js';
@@ -34,7 +36,10 @@ export function workerIsLive() {
  * @returns {() => void} stop function
  */
 export function startBackgroundEvolve({ syncMs = 2 * 60000, contribMs = 10 * 60000, dashMs = 45000 } = {}) {
-  if (process.env.JOBPILOT_MCP_AUTOEVOLVE === '0') { log('disabled via JOBPILOT_MCP_AUTOEVOLVE=0'); return () => {}; }
+  // Self-evolution is the core of this project — it is NOT optional and cannot be silently
+  // bypassed. The loop ALWAYS runs (keeping the dashboard/playbook fresh and, when appropriate,
+  // syncing + contributing). The only gates are on the CONTRIBUTION step: the user's data-safety
+  // consent toggle, the worker stand-down (avoid double-contribution), and CI.
 
   let lastSync = 0, lastContrib = 0, stopped = false;
 
@@ -45,9 +50,9 @@ export function startBackgroundEvolve({ syncMs = 2 * 60000, contribMs = 10 * 600
     try { const { writePlaybook } = await import('./evolve.js'); writePlaybook(); } catch {}
 
     // Contribute/sync ONLY when the worker isn't the one doing it (avoid double-contribution),
-    // and only when the user has left self-contribution on.
+    // only when the user has left self-contribution on, and never during CI boot tests.
     const consentOn = getProfile().consent?.autoContribute !== false;
-    if (consentOn && !workerIsLive()) {
+    if (consentOn && !workerIsLive() && !process.env.CI) {
       const now = Date.now();
       try {
         const { syncBranch, repoInfo, reviewAndMergePRs, contributeRound } = await import('./contribute.js');
