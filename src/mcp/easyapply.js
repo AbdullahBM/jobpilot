@@ -69,6 +69,15 @@ async function fillPage(page, dlg, ctx) {
   const p = getProfile();
   const groups = {};
   for (const f of fields) if (f.type === 'radio') (groups[f.name || f.q] ||= []).push(f);
+  // Checkbox GROUPS: LinkedIn renders "select all that apply" / single-select questions as a set
+  // of role="checkbox" wrappers around hidden inputs. The `required` flag lives on the group, not
+  // each input, so handling them one-by-one leaves the group empty and the page can't advance.
+  const cbGroups = {};
+  for (const f of fields) if (f.type === 'checkbox') (cbGroups[f.q] ||= []).push(f);
+  // A real multi-option question = 2+ checkboxes sharing one question. Standalone checkboxes
+  // (single consent/privacy/terms boxes) are still handled inline in the per-field loop.
+  const groupedCbIds = new Set();
+  for (const [q, g] of Object.entries(cbGroups)) if (g.length >= 2 && q && q.length > 8) g.forEach(f => groupedCbIds.add(f.id));
 
   for (const f of fields) {
     const loc = page.locator(`[data-ja="${f.id}"]`);
@@ -79,6 +88,7 @@ async function fillPage(page, dlg, ctx) {
       }
       if (f.type === 'radio') continue;
       if (f.type === 'checkbox') {
+        if (groupedCbIds.has(f.id)) continue; // part of a multi-option question → handled below
         if (!f.checked && f.required) await loc.check({ force: true }).catch(() => {});
         if (f.checked && /follow/i.test(f.q + f.optLabel)) await loc.uncheck({ force: true }).catch(() => {});
         continue;
