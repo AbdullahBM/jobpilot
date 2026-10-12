@@ -49,6 +49,35 @@ function beat(lane, phase, extra = {}) {
 }
 const say = (lane, m) => console.log(`[${new Date().toLocaleTimeString('en-GB')}] ${lane}: ${m}`);
 
+// ── NEVER STOP: global safety net ───────────────────────────────────────────────
+// A stray exception or rejected promise anywhere must NOT kill the worker. Log and keep going.
+process.on('uncaughtException',  e => { try { say('main', '⚠ uncaughtException (continuing): ' + ((e && e.stack) || e || '').toString().slice(0, 200)); } catch {} });
+process.on('unhandledRejection', e => { try { say('main', '⚠ unhandledRejection (continuing): ' + ((e && e.stack) || e || '').toString().slice(0, 200)); } catch {} });
+
+/**
+ * Run a lane under supervision: if the lane's loop ever throws, log it, pause briefly, and
+ * RESTART it — so a single lane crash can never bring down the worker or stop the pipeline.
+ * Returns only when the worker is intentionally stopping (running() === false).
+ * @param {string} name - lane name for logging
+ * @param {() => Promise<void>} fn - the lane function (an internal `while(running())` loop)
+ */
+async function supervise(name, fn) {
+  let restarts = 0;
+  while (running()) {
+    try {
+      await fn();
+      return;                       // lane returned because running() went false → clean stop
+    } catch (e) {
+      restarts++;
+      const wait = Math.min(60000, 5000 * restarts);   // backoff, capped at 60s
+      say(name, `💥 lane crashed (#${restarts}) — restarting in ${Math.round(wait / 1000)}s: ${((e && e.message) || e || '').toString().slice(0, 120)}`);
+      beat(name, `crashed — auto-restarting (#${restarts})`);
+      await SLEEP(wait);
+    }
+  }
+}
+
+
 // When a site needs the user to (re)log in, surface a ONE-CLICK link on the dashboard.
 const LOGIN_URL = { LinkedIn: 'https://www.linkedin.com/login', Gmail: 'https://mail.google.com/' };
 function flagLogin(site, reason, url) {
@@ -148,6 +177,7 @@ async function scout() {
 // ── MAILER lane ────────────────────────────────────────────────────────────────
 async function mailer() {
   while (running()) {
+   try {
     if (capLeft('email', 'email') <= 0) { beat('mailer', 'daily cap reached'); await SLEEP(10 * 60000); continue; }
     // If Gmail needs a login, don't hammer it — show the banner and wait, re-probing every ~3 min.
     if (loginBackoff('Gmail')) { beat('mailer', 'paused — waiting for you to log into Gmail'); await SLEEP(30000); continue; }
@@ -168,6 +198,7 @@ async function mailer() {
     say('mailer', `${r.ok ? '✉ SENT' : '✗'} ${j.email} (${j.role} @ ${j.company})`);
     writeDash();
     await jitter(PACE.mailer);
+   } catch (e) { say('mailer', 'error (skipping lead): ' + ((e && e.message) || e || '').toString().slice(0, 80)); await SLEEP(5000); }
   }
 }
 
@@ -241,6 +272,7 @@ async function applier() {
 let connectPaused = false;
 async function connector() {
   while (running()) {
+   try {
     if (connectPaused || capLeft('connect', 'connect') <= 0) { beat('connector', connectPaused ? 'paused (weekly limit)' : 'daily cap'); await SLEEP(15 * 60000); continue; }
     if (needsLogin('LinkedIn')) { beat('connector', 'paused — waiting for you to log into LinkedIn'); await SLEEP(60000); continue; }
     const j = queue('connect', 15).find(j => j.poster_url && !alreadyConnected(j.poster_url) && !alreadyApplied(j.company, j.role));
@@ -258,6 +290,7 @@ async function connector() {
     say('connector', `🔗 ${r.result} → ${j.poster_name}`);
     writeDash();
     await jitter(PACE.connector);
+   } catch (e) { say('connector', 'error (skipping lead): ' + ((e && e.message) || e || '').toString().slice(0, 80)); await SLEEP(5000); }
   }
 }
 
@@ -319,19 +352,28 @@ async function refresher() {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 try { fs.rmSync(STOPFILE, { force: true }); } catch {}   // clear any stale stop flag
-await launchChrome();
+try { await launchChrome(); } catch (e) { say('main', 'chrome launch issue (continuing): ' + (e.message || '').slice(0, 80)); }
 await initDB();
 // Keep the repo branch in sync with the main repo on startup (fork → rebase on upstream).
 if (!DRY && getProfile().consent?.autoContribute !== false) {
   try { const { syncBranch } = await import('./contribute.js'); const s = await syncBranch(); say('main', `branch sync: ${s.synced ? 'in sync with ' + (s.upstream || 'origin') : 'skipped (' + (s.reason || '') + ')'}`); } catch {}
 }
-const uiPort = await startServer();           // dashboard + Questions + /api/answers + /evidence + /api/stop
-process.env.JOB_AGENT_PORT = String(uiPort || 7788);
+let uiPort = 7788;
+try { uiPort = await startServer() || 7788; } catch (e) { say('main', 'dashboard server issue (continuing): ' + (e.message || '').slice(0, 80)); }
+process.env.JOB_AGENT_PORT = String(uiPort);
 say('main', `worker start${DRY ? ' (DRY)' : ''} — concurrent lanes: scout · mailer · applier · connector`);
-say('main', `dashboard + Stop button live at http://127.0.0.1:${uiPort || 7788}`);
-beat('main', 'running', { uiPort: uiPort || 7788 });
+say('main', `dashboard + Stop button live at http://127.0.0.1:${uiPort}`);
+beat('main', 'running', { uiPort });
 // Watchdog: when the Stop flag appears (UI/CLI), exit the whole process promptly.
 (async () => { while (!stopped()) await SLEEP(1500); say('main', '⏹ Stop requested — shutting down all lanes'); beat('main', 'stopped'); await SLEEP(500); process.exit(0); })();
-await Promise.all([scout(), mailer(), applier(), connector(), refresher()]);
+// Each lane runs under supervise(): a crash auto-restarts the lane, never the whole worker.
+// Promise.all resolves only when every lane returns (i.e. Stop was requested).
+await Promise.all([
+  supervise('scout', scout),
+  supervise('mailer', mailer),
+  supervise('applier', applier),
+  supervise('connector', connector),
+  supervise('refresher', refresher),
+]);
 beat('main', 'stopped');
 process.exit(0);
