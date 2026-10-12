@@ -179,9 +179,22 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
     if (missing.length) { missing.forEach(q => askLater(q)); return { ok: false, result: 'needs_manual', detail: 'unknown required: ' + missing.slice(0, 4).join(' | ').slice(0, 300), questions: missing, finalUrl }; }
     if (!submit) return { ok: true, result: 'dry_run_ready', detail: `filled ${n} fields`, finalUrl };
 
-    const btn = page.getByRole('button', { name: /submit application|submit|send application|apply now|^apply$/i }).last();
+    // Prefer an explicit submit control (Workable's `[data-ui="apply-button"]`, Greenhouse/Lever
+    // `button[type=submit]`) before falling back to the generic accessible-name match. The
+    // submit button usually sits at the very bottom of a long form, so it can be below the fold
+    // where a sticky footer/overlay intercepts a plain click — hence the scroll + forced + JS
+    // click fallbacks instead of a single click() that hangs until the actionability timeout.
+    const btn = page.locator(
+      'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"])'
+    ).first()
+      .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|^apply$/i }).last());
     if (!(await btn.isVisible().catch(() => false))) { await encounter('form', 'form filled but no submit button on ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'no submit button', finalUrl }; }
-    await btn.click();
+    await btn.scrollIntoViewIfNeeded().catch(() => {});
+    await SLEEP(300);
+    let clicked = await btn.click({ timeout: 8000 }).then(() => true).catch(() => false);
+    if (!clicked) clicked = await btn.click({ force: true, timeout: 5000 }).then(() => true).catch(() => false);
+    if (!clicked) clicked = await btn.evaluate(el => { el.click(); return true; }).catch(() => false);
+    if (!clicked) { await encounter('form', 'submit button not clickable on ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'submit button not clickable', finalUrl }; }
     for (let i = 0; i < 20; i++) {
       await SLEEP(1000);
       const t = await page.evaluate(() => document.body.innerText).catch(() => '');
