@@ -258,7 +258,10 @@ async function applier() {
         }
         if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; clearLogin('LinkedIn'); }
         else if (r.result === 'no_easy_apply') { if (r.externalUrl) setFields(j.url, { channel: 'form', apply_url: r.externalUrl }); else setStatus(j.url, 'skipped', 'no Easy Apply / external'); }
-        else if (r.result === 'needs_answers') setStatus(j.url, 'needs_manual', r.detail);
+        // Never invent qualifications or interrupt the user for a one-off question.
+        // The form driver has already exhausted the profile, CV-derived answers, and learned
+        // answers; an unresolved required answer means this lead is not safe to submit.
+        else if (r.result === 'needs_answers') setStatus(j.url, 'skipped', `unsupported required answer: ${r.detail}`);
         else if (r.result === 'closed') setStatus(j.url, 'skipped', 'closed');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
         // repeated misses in a row usually mean soft-throttling → 30-min cooldown (per your guidance)
@@ -270,7 +273,10 @@ async function applier() {
         beat('applier', `📋 ${j.role} @ ${j.company}`);
         const r = await applyForm({ url: target, submit: true });
         if (r.result === 'submitted') setStatus(j.url, 'applied', 'form submitted');
-        else if (r.result === 'needs_manual') setStatus(j.url, 'needs_manual', r.detail);
+        else if (r.result === 'needs_manual') {
+          const unknownAnswer = /unknown required|needs your answer|captcha/i.test(r.detail || '');
+          setStatus(j.url, unknownAnswer ? 'skipped' : 'needs_manual', unknownAnswer ? `unsupported required answer: ${r.detail}` : r.detail);
+        }
         else if (r.result === 'no_form') setStatus(j.url, 'skipped', 'no form');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
         if (r.finalUrl) setFields(j.url, { apply_url: r.finalUrl });
