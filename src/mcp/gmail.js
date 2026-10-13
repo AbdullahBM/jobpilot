@@ -13,43 +13,81 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
   const page = await ctx.newPage();
   page.setDefaultTimeout(30000);
   try {
-    await page.goto('https://mail.google.com/mail/u/0/#inbox?compose=new', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await page.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await SLEEP(3000);
     if (/accounts\.google\.com|ServiceLogin/.test(page.url())) return { ok: false, result: 'failed', detail: 'Gmail not logged in' };
 
-    const dlg = page.locator('div[role="dialog"]').filter({ has: page.locator('input[name="subjectbox"]') }).last();
-    await dlg.waitFor({ state: 'visible', timeout: 25000 });
-    await SLEEP(800);
+    // Click the Compose button to open the compose window
+    const composeBtn = page.getByRole('button', { name: /compose/i }).first()
+      .or(page.locator('[data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE').first());
+    await composeBtn.click({ timeout: 10000 }).catch(() => {});
+    await SLEEP(2500);
 
-    const toField = dlg.locator('input[aria-label*="To" i], input[peoplekit-id], textarea[name="to"]').first();
-    await toField.click();
+    // The compose window — Gmail renders it as a table/div, NOT role="dialog" in all versions.
+    // Use a broad selector that works across Gmail UI variants.
+    const dlg = page.locator([
+      'div[role="dialog"]',
+      '.nH.Hd[tabindex="-1"]',          // classic Gmail compose wrapper
+      'div.AD',                           // newer Gmail compose panel
+      'div[aria-label*="New Message"]',
+      'div[aria-label*="New message"]',
+      'table.aoC',
+    ].join(', ')).filter({ has: page.locator('input[name="subjectbox"], input[aria-label*="Subject" i]') }).last();
+
+    // Wait generously — compose window can take a few seconds to fully mount.
+    await dlg.waitFor({ state: 'visible', timeout: 20000 }).catch(async () => {
+      // Fallback: just look for the subject input anywhere on the page
+    });
+
+    // Use the subject input as anchor — works whether or not the dialog wrapper matched.
+    const subjectInput = page.locator('input[name="subjectbox"]')
+      .or(page.locator('input[aria-label*="Subject" i]')).first();
+    const subjectVisible = await subjectInput.isVisible().catch(() => false);
+    if (!subjectVisible) return { ok: false, result: 'failed', detail: 'Gmail compose window did not open' };
+
+    // To field
+    const toField = page.locator('input[aria-label*="To" i], input[peoplekit-id], textarea[name="to"]').first();
+    await toField.click().catch(() => {});
     await toField.fill(to);
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await SLEEP(400);
-    await dlg.locator('input[name="subjectbox"]').fill(subject);
-    const bodyBox = dlg.locator('div[aria-label="Message Body"][contenteditable="true"], div[role="textbox"][contenteditable="true"]').first();
+
+    // Subject
+    await subjectInput.fill(subject);
+
+    // Body
+    const bodyBox = page.locator('div[aria-label="Message Body"][contenteditable="true"]')
+      .or(page.locator('div[role="textbox"][contenteditable="true"]')).first();
     await bodyBox.click();
     await bodyBox.fill(body);
 
+    // Attachment
     let attached = false;
     if (attachmentPath && fs.existsSync(attachmentPath)) {
       const name = path.basename(attachmentPath);
-      await dlg.locator('input[type="file"][name="Filedata"], input[type="file"]').first().setInputFiles(attachmentPath);
-      // chip shows file name; upload done when the progress bar disappears
+      await page.locator('input[type="file"][name="Filedata"], input[type="file"]').first().setInputFiles(attachmentPath);
       for (let i = 0; i < 40 && !attached; i++) {
         await SLEEP(500);
-        attached = await dlg.evaluate((el, n) => el.innerText.includes(n) && !el.querySelector('[role="progressbar"]'), name).catch(() => false);
+        attached = await page.evaluate((n) => document.body.innerText.includes(n) && !document.querySelector('[role="progressbar"]'), name).catch(() => false);
       }
-      if (!attached) { await discardDraft(page, dlg); return { ok: false, result: 'failed', detail: 'CV attachment did not finish uploading' }; }
+      if (!attached) return { ok: false, result: 'failed', detail: 'CV attachment did not finish uploading' };
     }
 
-    await dlg.getByRole('button', { name: /^Send/ }).first().click().catch(() => page.keyboard.press('Control+Enter'));
+    // Send
+    const sendBtn = page.getByRole('button', { name: /^Send/ }).first()
+      .or(page.locator('[data-tooltip*="Send"], [aria-label*="Send "]').first());
+    await sendBtn.click({ timeout: 8000 }).catch(() => page.keyboard.press('Control+Enter'));
+
     let sent = false;
     for (let i = 0; i < 20 && !sent; i++) {
       await SLEEP(500);
-      sent = await page.evaluate(() => /Message sent|Sending\.\.\./i.test(document.body.innerText.slice(-4000)) || /Message sent/i.test(document.querySelector('[role="alert"]')?.innerText || '')).catch(() => false);
+      sent = await page.evaluate(() =>
+        /Message sent|Sending\.\.\./i.test(document.body.innerText.slice(-4000)) ||
+        /Message sent/i.test(document.querySelector('[role="alert"]')?.innerText || '')
+      ).catch(() => false);
     }
-    // a still-visible compose dialog with our subject means it did NOT go
-    if (!sent) sent = !(await dlg.isVisible().catch(() => false));
+    // If compose window closed, that's also a success signal
+    if (!sent) sent = !(await subjectInput.isVisible().catch(() => false));
     await SLEEP(1500);
     return sent
       ? { ok: true, result: 'sent', detail: `Sent to ${to}${attached ? ' with CV' : ''}` }

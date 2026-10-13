@@ -121,15 +121,21 @@ function locationAllowed(job) {
 
   // Pakistani job boards always produce Pakistan-scope jobs — trust the source.
   if (country === 'pakistan' && /rozee|mustakbil/.test(source)) return true;
-  // Remote jobs that mention Pakistan anywhere in their text are in scope.
+
+  // Remote jobs with NO location field: allow them through.
+  // Most global remote job boards (remoteok, remotive, himalayas, arbeitnow, jobicy)
+  // don't set a location — blocking them left 785 jobs stuck in `new` forever.
+  if (!location && job.remote) return true;
+
+  // Remote jobs that mention Pakistan anywhere are in scope.
   if (country === 'pakistan' && job.remote) {
-    const haystack = `${location} ${job.role || ''} ${job.description || ''}`.toLowerCase();
+    const haystack = `${location} ${job.role || ''} ${(job.description || '').slice(0, 300)}`.toLowerCase();
     if (/pakistan|karachi|lahore|islamabad/.test(haystack)) return true;
   }
 
-  if (!country || !location) return false; // conservative: unknown location is not in scope
+  // Jobs with explicit location: match country or major city.
+  if (!country || !location) return false;
   if (location.includes(country)) return true;
-  // LinkedIn and boards often abbreviate a Pakistan location to its city.
   if (country === 'pakistan') return /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/.test(location);
   return false;
 }

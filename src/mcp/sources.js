@@ -49,14 +49,21 @@ const GEO_LOCK = /\b(us|u\.s\.|usa|united states|uk|eu|europe|canada|india|brazi
 export function score(text = '', title = '') {
   const p = getProfile();
   const t = text.toLowerCase();
-  const head = (title || text.slice(0, 220)).toLowerCase();
-  const skipHit = (p.preferences?.skip || []).find(s => new RegExp(`\\b${s}`, 'i').test(head));
+  // CRITICAL: skip-term and off-stack checks must ONLY fire on the job TITLE, never the
+  // description. "Backend Engineer" was being skipped because the post body mentioned
+  // "sales team" or "QA process" in an unrelated context.
+  const titleOnly = (title || '').toLowerCase().trim();
+  const head = titleOnly || text.slice(0, 100).split('\n')[0].toLowerCase(); // first line as fallback
+  const skipHit = titleOnly
+    ? (p.preferences?.skip || []).find(s => new RegExp(`\\b${s}\\b`, 'i').test(titleOnly))
+    : null; // no clean title → never skip based on description content
   const terms = new Set([...(p.skills || []), ...(p.preferences?.keywords || [])].map(s => s.toLowerCase()));
   const core = CORE_TITLE.test(head);
   const offStack = OFF_STACK.test(head) && !/\b(python|ai|ml|llm|fastapi|django)\b/.test(head);
   let hit = 0; for (const s of terms) if (t.includes(s)) hit++;
   const rel = Math.min(1, (core ? 0.45 : 0) + 0.55 * Math.min(1, hit / 6));
-  const tooJunior = /\b(freshers?|0\s*[-–]\s*[12]\s*(years|yrs)|entry[- ]level|internship|interns?\b|trainee|graduate program)\b/.test(t.slice(0, 700));
+  // Junior check: title + first 120 chars of body only — not the full description.
+  const tooJunior = /\b(freshers?|0\s*[-–]\s*[12]\s*(years|yrs)|entry[- ]level|internship|interns?\b|trainee|graduate program)\b/.test(titleOnly + ' ' + t.slice(0, 120));
   const equityOnly = /\b(co-?founder|cofondat|equity[- ]only|unpaid|sweat equity|no salary)\b/.test(t.slice(0, 700));
   const geo = GEO_LOCK.test(text.slice(0, 2500));
   const why = skipHit ? `skip term "${skipHit}"` : !core ? 'title not an engineering role I target' : offStack ? 'off-stack title' : tooJunior ? 'junior/fresher' : equityOnly ? 'co-founder / equity-only' : geo ? 'location-restricted / onsite' : '';
