@@ -73,6 +73,6 @@ if (!depsOk) console.log(`  1. ${Y}npm install${X}`);
 if (!cdp.ok) console.log(`  ${!depsOk ? 2 : 1}. ${Y}Close Chrome → run launch_chrome.bat → log into your job sites${X}`);
 if (!isOnboarded()) console.log(`  → ${Y}Tell your agent your CV path, links, and target roles${X}`);
 if (depsOk && cdp.ok && isOnboarded()) {
-  console.log(`  ${G}${B}All set!${X} Tell your agent: "find and apply to AI jobs"`);
+  console.log(`  ${G}${B}All set!${X} Tell your agent: "find and apply to my selected CV roles"`);
 }
 console.log('');
