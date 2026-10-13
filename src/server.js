@@ -114,6 +114,12 @@ const server = http.createServer(async (req, res) => {
       const saved = updateProfile({ consent: { autoContribute: !!body.autoContribute } });
       return json(res, 200, { ok: true, consent: saved.consent });
     }
+    // ── POST /api/tailored-cv-consent → explicit approval gate ────────────────
+    if (req.method === 'POST' && url.pathname === '/api/tailored-cv-consent') {
+      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      const saved = updateProfile({ preferences: { allowTailoredCv: body.allowTailoredCv === true } });
+      return json(res, 200, { ok: true, allowTailoredCv: saved.preferences.allowTailoredCv });
+    }
 
     // ── GET /api/answers → open questions + learned answers ───────────────────
     if (req.method === 'GET' && url.pathname === '/api/answers') {
@@ -249,6 +255,15 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
 </div>
 
 <div class="card">
+  <h2>📄 CV tailoring approval</h2>
+  <label style="display:flex;gap:8px;align-items:flex-start;color:#e2e8f0">
+    <input type="checkbox" id="allowTailoredCv" ${p.preferences?.allowTailoredCv === true ? 'checked' : ''}>
+    Allow JobPilot to generate and upload a job-specific CV draft for slightly related target roles.
+  </label>
+  <div class="sub" style="margin:8px 0 0">This is optional and starts OFF. The uploaded draft may only reorder facts from the main CV/profile. JobPilot records match and drift percentages and will never use a tailored draft for a role outside your configured CV target roles.</div>
+</div>
+
+<div class="card">
   <h2>💰 The things the agent should never guess</h2>
   <div class="sub" style="margin:-6px 0 10px">So it can answer screening questions without pausing to ask you.</div>
   <div class="row">
@@ -334,7 +349,7 @@ $('save').onclick = async () => {
     salaryExpectations,
     workAuth: { needsSponsorship: sponsorVal === 'yes' ? true : sponsorVal === 'no' ? false : undefined, authorizedIn: parseList($('authIn').value) },
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
-    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value },
+    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value, allowTailoredCv: $('allowTailoredCv').checked },
     loggedInSources: parseList($('sources').value),
     answers,
   };

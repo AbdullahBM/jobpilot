@@ -41,6 +41,11 @@ export function initEvolve() {
       lane TEXT, key TEXT, tries INTEGER DEFAULT 0, wins INTEGER DEFAULT 0, yield INTEGER DEFAULT 0,
       last TEXT DEFAULT (datetime('now')), PRIMARY KEY (lane, key));
   `);
+  const answerCols = new Set(rows('PRAGMA table_info(answers)').map(c => c.name));
+  const addAnswer = (name, type) => { if (!answerCols.has(name)) db.run(`ALTER TABLE answers ADD COLUMN ${name} ${type}`); };
+  addAnswer('confidence', 'INTEGER DEFAULT NULL');
+  addAnswer('match_percent', 'INTEGER DEFAULT NULL');
+  addAnswer('confidence_basis', "TEXT DEFAULT ''");
   save();
 }
 
@@ -264,23 +269,40 @@ export function askLater(question, options = []) {
  * @param {string} answer  - the answer the agent used
  * @param {string} [basis] - short description of how it was derived
  */
-export function recordAgentAnswer(question, answer, basis = '') {
+export function recordAgentAnswer(question, answer, basis = '', meta = {}) {
   const k = qkey(question);
   if (!k || answer == null || String(answer).trim() === '') return;
   const cur = one(`SELECT source, pending FROM answers WHERE qkey=?`, [k]);
   // Never overwrite a user-provided answer
   if (cur && cur.pending === 0 && cur.source === 'user') return;
   getDB().run(
-    `INSERT INTO answers (qkey, question, answer, source, pending, options) VALUES (?,?,?,?,2,?)
+    `INSERT INTO answers (qkey, question, answer, source, pending, options, confidence, match_percent, confidence_basis) VALUES (?,?,?,?,2,?,?,?,?)
      ON CONFLICT(qkey) DO UPDATE SET
        answer=excluded.answer,
        source='agent',
        pending=CASE WHEN pending=0 AND source='user' THEN 0 ELSE 2 END,
        uses=uses+1,
        options=excluded.options,
+       confidence=excluded.confidence,
+       match_percent=excluded.match_percent,
+       confidence_basis=excluded.confidence_basis,
        updated_at=datetime('now')`,
-    [k, String(question).slice(0, 300), String(answer).slice(0, 2000), 'agent', basis.slice(0, 200)]);
+    [k, String(question).slice(0, 300), String(answer).slice(0, 2000), 'agent', basis.slice(0, 200),
+      meta.confidence == null ? confidenceFromBasis(basis) : Math.round(meta.confidence),
+      meta.matchPercent == null ? (meta.confidence == null ? confidenceFromBasis(basis) : Math.round(meta.confidence)) : Math.round(meta.matchPercent),
+      String(meta.confidenceBasis || basis).slice(0, 200)]);
   save();
+}
+
+/** Stable, explainable confidence band used by the dashboard report. */
+export function confidenceFromBasis(basis = '') {
+  const b = String(basis).toLowerCase();
+  if (/name|email|phone|linkedin|github|location|country|currentcompany|headline|years|salary|notice|education/.test(b)) return 95;
+  if (/workauth|authorized|sponsorship|legal/.test(b)) return 90;
+  if (/profile\.answers|override|harvested/.test(b)) return 98;
+  if (/generated|cover|summary|free-form/.test(b)) return 70;
+  if (/standard yes|default|remote preference/.test(b)) return 62;
+  return 75;
 }
 
 /** @returns {object[]} Questions pending user input (pending=1). */

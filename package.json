@@ -17,7 +17,8 @@
     "worker:forever": "node scripts/ensure.mjs && node scripts/worker-forever.mjs",
     "stop": "node scripts/stop.mjs",
     "test:browser": "node scripts/test-browser.mjs",
-    "test:mcp": "node scripts/test-mcp.mjs"
+    "test:mcp": "node scripts/test-mcp.mjs",
+    "test:cv": "node scripts/test-cv-feature.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

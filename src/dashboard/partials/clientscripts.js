@@ -83,6 +83,21 @@ async function consent(on){
   }
 }
 
+// Explicit approval gate for job-specific CV drafts/uploads. Disabled by default.
+async function tailoredConsent(on){
+  const base = apiBase();
+  const label = on ? 'Approve generating/uploading tailored CV drafts for slightly related roles?' : 'Disable tailored CV generation and uploads?';
+  if (!confirm(label)) return;
+  try {
+    const r = await fetch(base + '/api/tailored-cv-consent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowTailoredCv: on })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    location.hash = '#tab-cv'; location.reload();
+  } catch(e) { alert('Could not update tailored CV approval: ' + e.message); }
+}
+
 // ── Stop the worker ───────────────────────────────────────────────────────────
 async function stopAll(){
   if (!confirm('Stop the JobPilot worker? All lanes halt within a few seconds. Your logged-in Chrome stays open.')) return;

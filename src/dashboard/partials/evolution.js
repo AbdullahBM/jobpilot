@@ -48,6 +48,7 @@ export function renderQuestionsTab(pend, agentAnswered, recommend) {
     <td>
       <span class="em">${esc(a.answer)}</span>
       &nbsp;${agentBadge()}
+      <div class="dim" style="margin-top:3px">confidence ${a.confidence == null ? '—' : `${a.confidence}%`} · match ${a.match_percent == null ? '—' : `${a.match_percent}%`} · ${esc(a.confidence_basis || a.options || 'profile')}</div>
       &nbsp;<button class="opt" style="font-size:11px;padding:2px 8px" onclick="overrideAns('${esc(a.qkey)}','${esc(a.answer)}')">override</button>
     </td>
   </tr>`).join('');
@@ -60,7 +61,7 @@ export function renderQuestionsTab(pend, agentAnswered, recommend) {
   const agentTable = agentAnswered.length
     ? `<h2 style="margin-top:18px">🤖 Auto-answered by agent (${agentAnswered.length}) — review &amp; override if needed</h2>
        <p class="dim" style="margin-bottom:8px">These were derived from your profile. The agent used them already — click override to correct any.</p>
-       ${table('agent_answered', ['Question', 'Agent\'s answer'], agentRows, '')}`
+       ${table('agent_answered', ['Question', 'Agent\'s answer / confidence'], agentRows, '')}`
     : '';
 
   return `

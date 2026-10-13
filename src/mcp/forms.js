@@ -8,6 +8,7 @@ import { getProfile } from '../profile.js';
 import { textAnswer, choiceAnswer, coverText } from './answers.js';
 import { encounter, askLater, learn } from '../evolve.js';
 import fs from 'fs';
+import { cvAttachmentForJob } from '../cv.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 const CONFIRM_RE = /thank(s| you) for (applying|your (application|interest))|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)/i;
@@ -167,8 +168,9 @@ async function followRedirect(page, startHost) {
 }
 
 
-async function fillAll(page, unknown) {
+async function fillAll(page, unknown, job = {}) {
   const p = getProfile();
+  const cvPath = cvAttachmentForJob(job, p);
   const fields = await page.evaluate(SCAN);
   const radios = {};
   for (const f of fields) {
@@ -176,7 +178,7 @@ async function fillAll(page, unknown) {
     try {
       if (f.type === 'file') {
         const isCover = /cover/i.test(f.q + f.name);
-        if (!isCover && p.cvPath && fs.existsSync(p.cvPath)) { await loc.setInputFiles(p.cvPath); await SLEEP(1500); }
+        if (!isCover && cvPath && fs.existsSync(cvPath)) { await loc.setInputFiles(cvPath); await SLEEP(1500); }
         continue;
       }
       if (f.type === 'radio') { (radios[f.name || f.q] ||= []).push(f); continue; }
@@ -220,7 +222,7 @@ async function fillAll(page, unknown) {
   return fields.length;
 }
 
-export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
+export async function applyForm({ url, timeoutMs = 120000, submit = true, job = {} }) {
   const ctx = await getContext();
   const page = await ctx.newPage();
   page.setDefaultTimeout(15000);
@@ -273,7 +275,7 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
     if (/linkedin\.com\/(login|authwall)/.test(page.url())) { await encounter('form', 'redirected to linkedin login/authwall', { url: page.url(), page }); return { ok: false, result: 'needs_manual', detail: 'redirected to ' + page.url().slice(0, 80), finalUrl }; }
     if (/workday|myworkdayjobs|icims|taleo|successfactors|oraclecloud|brassring/.test(finalUrl)) return { ok: false, result: 'needs_manual', detail: 'account-gated ATS (Workday/iCIMS/Taleo) — one-click for you', finalUrl };
 
-    let n = await fillAll(page, unknown);
+    let n = await fillAll(page, unknown, job);
     if (n < 2) {
       // still on a job-board description page with no real form → hand off with the direct link
       if (BOARD_HOST.test(hostOf(finalUrl))) { await encounter('form', 'job-board page, no external ATS form found on ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'board page — open the apply link manually', finalUrl }; }
@@ -281,7 +283,7 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
       return { ok: false, result: 'no_form', detail: 'no application form found', finalUrl };
     }
     await SLEEP(800);
-    n = await fillAll(page, unknown); // second pass: conditional fields that appeared
+    n = await fillAll(page, unknown, job); // second pass: conditional fields that appeared
 
     // recompute unknown required: only those still empty
     const still = (await page.evaluate(SCAN)).filter(f => f.required && f.type !== 'file' && f.type !== 'checkbox' && (f.type === 'radio' ? false : !String(f.val || '').trim()));

@@ -25,6 +25,7 @@ import { getProfile, isExcludedCompany } from './profile.js';
 import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf } from './evolve.js';
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
+import { cvAttachmentForJob } from './cv.js';
 
 const DRY = process.env.DRY === '1';
 const DAILY = { email: 50, easy: 80, form: 30, connect: 18 };
@@ -110,6 +111,13 @@ function queue(channel, limit = 25) {
   return candidates.filter(j => !isExcludedCompany(`${j.company || ''} ${j.role || ''} ${j.description || ''}`)).slice(0, limit);
 }
 const capLeft = (k, type) => Math.max(0, DAILY[k] - doneToday(type));
+function jobCvAttachment(j, p) {
+  const attachment = cvAttachmentForJob(j, p);
+  if (attachment && attachment.includes(`${path.sep}tailored-cv${path.sep}`) && j.url) {
+    setFields(j.url, { tailor_status: 'generated', tailored_cv_path: attachment });
+  }
+  return attachment;
+}
 
 // ── ingest helper ────────────────────────────────────────────────────────────
 function ingest(leads) {
@@ -192,7 +200,7 @@ async function mailer() {
     // Dry runs must be observational: do not consume attempts or mark a lead as sent.
     if (DRY) { say('mailer', `DRY → ${j.email}`); await jitter(PACE.mailer); continue; }
     bumpAttempt(j.url);
-    const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: p.cvPath });
+    const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: jobCvAttachment(j, p) });
     if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
     else if (notLoggedIn(r.detail)) { flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do'); continue; }
     else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
@@ -226,7 +234,7 @@ async function applier() {
     try {
       if (doEasy) {
         beat('applier', `⚡ ${j.role} @ ${j.company}`);
-        const r = await easyApply({ url: j.apply_url || j.url });
+        const r = await easyApply({ url: j.apply_url || j.url, job: { ...j, role: j.role, company: j.company, description: j.description } });
         if (r.result === 'daily_limit') {
           // LinkedIn says "apply tomorrow" — stop Easy Apply for the rest of the day; forms keep going.
           liCooldownUntil = Date.now() + 14 * 3600000;
@@ -256,7 +264,7 @@ async function applier() {
       } else {
         const target = j.apply_url || j.url;
         beat('applier', `📋 ${j.role} @ ${j.company}`);
-        const r = await applyForm({ url: target, submit: true });
+        const r = await applyForm({ url: target, submit: true, job: { ...j, role: j.role, company: j.company, description: j.description } });
         if (r.result === 'submitted') setStatus(j.url, 'applied', 'form submitted');
         else if (r.result === 'needs_manual') setStatus(j.url, 'needs_manual', r.detail);
         else if (r.result === 'no_form') setStatus(j.url, 'skipped', 'no form');
