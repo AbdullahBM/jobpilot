@@ -25,7 +25,7 @@ import { getProfile, isExcludedCompany } from './profile.js';
 import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf } from './evolve.js';
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
-import { cvAttachmentForJob } from './cv.js';
+import { assessJob, cvAttachmentForJob } from './cv.js';
 
 const DRY = process.env.DRY === '1';
 const DAILY = { email: 50, easy: 80, form: 30, connect: 18 };
@@ -108,7 +108,23 @@ function queue(channel, limit = 25) {
      ORDER BY ${channel === 'email' ? "CASE WHEN source='linkedin_post' THEN 0 ELSE 1 END," : ''}
        CASE WHEN posted_at='' OR posted_at IS NULL THEN 1 ELSE 0 END, posted_at DESC, relevance DESC LIMIT ?`,
     [channel, MIN_REL[channel], minPosted, limit * 3]);
-  return candidates.filter(j => !isExcludedCompany(`${j.company || ''} ${j.role || ''} ${j.description || ''}`)).slice(0, limit);
+  const p = getProfile();
+  return candidates.filter(j => {
+    if (isExcludedCompany(`${j.company || ''} ${j.role || ''} ${j.description || ''}`)) return false;
+    const cv = assessJob(j, p);
+    if (!cv.roleAligned) {
+      setFields(j.url, {
+        status: 'skipped',
+        notes: `CV relevance guard: ${cv.basis}`,
+        cv_match_percent: cv.matchPercent,
+        cv_drift_percent: cv.driftPercent,
+        cv_missing_terms: cv.missingTerms.join(', '),
+        tailor_status: 'not_requested',
+      });
+      return false;
+    }
+    return true;
+  }).slice(0, limit);
 }
 const capLeft = (k, type) => Math.max(0, DAILY[k] - doneToday(type));
 function jobCvAttachment(j, p) {
