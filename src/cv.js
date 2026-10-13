@@ -10,6 +10,7 @@ import { DATA } from './config.js';
 
 const GENERIC = new Set('a an and as at by for from in into of on or the to with engineer engineering remote cloud platform infrastructure solution architect architecture operations reliability site devops'.split(' '));
 const TECH_TERMS = 'aws azure gcp kubernetes terraform docker linux jenkins github actions gitlab argocd helm ansible pulumi prometheus grafana istio vault nomad nginx apache python bash golang java powershell vmware eks aks gke openshift helm cloudformation'.split(' ');
+const OUT_OF_SCOPE_ROLE = /\b(ai|ml|machine learning|data scientist|software engineer|backend|frontend|full[ -]?stack|developer|manager|training)\b/i;
 
 function words(value = '') {
   return String(value).toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').split(/\s+/)
@@ -26,6 +27,8 @@ export const TARGET_ROLES = [
 
 function roleAligned(text, profile) {
   const hay = norm(text);
+  const title = String(text || '');
+  if (OUT_OF_SCOPE_ROLE.test(title)) return false;
   const roles = (profile.preferences?.roles?.length ? profile.preferences.roles : TARGET_ROLES);
   return roles.some(role => {
     const key = norm(role);

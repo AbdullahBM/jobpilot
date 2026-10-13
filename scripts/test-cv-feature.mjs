@@ -17,6 +17,7 @@ assert.equal(aligned.tailoredEligible, true);
 const outside = assessJob({ role: 'Frontend Developer', description: 'React TypeScript' }, profile);
 assert.equal(outside.roleAligned, false);
 assert.equal(outside.tailoredEligible, false);
+assert.equal(assessJob({ role: 'AI Platform Engineer', description: 'Kubernetes' }, profile).roleAligned, false);
 
 const gated = ensureTailoredCv({ role: 'Cloud Engineer', description: 'AWS Terraform Kubernetes' }, profile);
 assert.equal(gated.generated, false);
