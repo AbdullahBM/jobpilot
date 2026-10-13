@@ -43,7 +43,7 @@ const FORM_RE = /greenhouse|lever\.co|ashbyhq|workable|smartrecruiters|breezy|re
 
 /** Relevance 0..1 + hard skip. Title drives it (the full text has every buzzword).
  *  Returns {rel, skip, why} */
-const CORE_TITLE = /\b(ai|a\.i\.|ml|machine learning|llm|gen ?ai|generative|nlp|rag|agent(ic)?|python|django|fastapi|backend|back[- ]end|full[- ]?stack|software|platform|cloud|devops|sre|founding|product engineer|solutions? architect|systems engineer|applied scientist|data engineer|mlops)\b/i;
+const CORE_TITLE = /\b(ai|a\.i\.|ml|machine learning|llm|gen ?ai|generative|nlp|rag|agent(ic)?|python|django|fastapi|backend|back[- ]end|full[- ]?stack|software|platform|cloud|devops|sre|site reliability|reliability engineer|infrastructure engineer|production engineer|kubernetes engineer|terraform engineer|founding|product engineer|solutions? architect|systems engineer|applied scientist|data engineer|mlops)\b/i;
 const OFF_STACK = /\b(java(?!script)|\.net|c#|ruby|rails|rust|golang|ios|android|swift|kotlin|flutter|php|wordpress|shopify|salesforce|sap|servicenow|qa|test(er|ing)?|quality|sdet|manager|director|vp|head of|chief|designer|sales|marketing|support|analyst|embedded|firmware|hardware|mechanical|electrical|civil|network engineer|security engineer|unity|game|blockchain|solidity|mainframe|cobol|angular|react native|frontend|front[- ]end)\b/i;
 const GEO_LOCK = /\b(us|u\.s\.|usa|united states|uk|eu|europe|canada|india|brazil|br|latam|germany|australia)[- ]?(only|based only|residents? only|citizens? only)\b|\bmust (be|reside|live) (located |based )?in (the )?(us|usa|united states|uk|eu|canada|india)\b|\b(onsite|on-site|work from office|wfo)\b(?![^.]{0,40}remote)|\bus citizen|security clearance|\bh1b\b/i;
 export function score(text = '', title = '') {
