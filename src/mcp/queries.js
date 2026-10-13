@@ -9,9 +9,10 @@ const APPLY_SIGNALS = ['email your cv', 'dm me', 'apply', 'remote'];
 
 /**
  * Build a deduped list of search queries from the profile's roles + keywords.
- * Each role gets a few phrasings; remote preference is appended when set.
+ * Each role gets a few phrasings; country-scoped profiles also inject location terms
+ * so LinkedIn content search surfaces local hiring posts.
  */
-export function buildQueries({ limit = 26 } = {}) {
+export function buildQueries({ limit = 30 } = {}) {
   const p = getProfile();
   const roles = (p.preferences?.roles || []).length
     ? p.preferences.roles
@@ -20,12 +21,35 @@ export function buildQueries({ limit = 26 } = {}) {
   const skills = p.skills || p.preferences?.skills || [];
   const remote = p.preferences?.remoteOnly ? ' remote' : '';
 
+  // Country-scoped: append location terms so LinkedIn content search surfaces local hiring posts.
+  const isCountryScope = p.preferences?.locationScope === 'country';
+  const isPakistan = isCountryScope && String(p.country || '').toLowerCase() === 'pakistan';
+  const locationVariants = isPakistan ? [' Pakistan', ' Karachi', ' Lahore', ''] : [''];
+
   const out = new Set();
   for (const role of roles) {
-    out.add(`hiring ${role}${remote}`);
-    out.add(`we are hiring ${role}${remote}`);
+    for (const loc of locationVariants.slice(0, 2)) {   // top 2 location variants per role
+      out.add(`hiring ${role}${loc}${remote}`);
+      out.add(`we are hiring ${role}${loc}${remote}`);
+    }
     out.add(`looking for ${role}${remote} email your cv`);
   }
+
+  // Pakistan-specific hiring phrases that local recruiters use on LinkedIn.
+  if (isPakistan) {
+    for (const role of roles.slice(0, 4)) {
+      out.add(`${role} job Pakistan`);
+      out.add(`hiring ${role} Pakistan email cv`);
+    }
+    out.add('AI Engineer Pakistan hiring');
+    out.add('Backend Engineer Pakistan hiring');
+    out.add('Python developer Pakistan hiring');
+    out.add('LLM engineer Pakistan');
+    out.add('FastAPI developer Pakistan');
+    out.add('Machine Learning Engineer Karachi');
+    out.add('AI Engineer remote Pakistan');
+  }
+
   // Keyword-driven (langchain, fastapi, system design, …)
   for (const k of kws.slice(0, 8)) out.add(`hiring ${k} engineer${remote}`);
   // SKILLS-driven — match on what they can DO, not only titled roles (steering).

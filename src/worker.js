@@ -117,6 +117,16 @@ function locationAllowed(job) {
   if (profile.preferences?.locationScope !== 'country') return true;
   const country = String(profile.country || '').trim().toLowerCase();
   const location = String(job.location || '').trim().toLowerCase();
+  const source = String(job.source || '').toLowerCase();
+
+  // Pakistani job boards always produce Pakistan-scope jobs — trust the source.
+  if (country === 'pakistan' && /rozee|mustakbil/.test(source)) return true;
+  // Remote jobs that mention Pakistan anywhere in their text are in scope.
+  if (country === 'pakistan' && job.remote) {
+    const haystack = `${location} ${job.role || ''} ${job.description || ''}`.toLowerCase();
+    if (/pakistan|karachi|lahore|islamabad/.test(haystack)) return true;
+  }
+
   if (!country || !location) return false; // conservative: unknown location is not in scope
   if (location.includes(country)) return true;
   // LinkedIn and boards often abbreviate a Pakistan location to its city.

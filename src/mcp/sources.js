@@ -263,5 +263,58 @@ export async function publicBoards({ maxAgeHours = 72 } = {}) {
   for (const x of hm?.jobs || []) push('himalayas', x.title, x.companyName, x.applicationLink || x.guid, strip(x.description || x.excerpt), (x.pubDate || 0) * 1000);
   const seen = new Set();
   const uniq = leads.filter(l => !seen.has(l.url) && seen.add(l.url));
-  return { ok: true, leads: uniq, detail: `${uniq.length} fresh board jobs (${uniq.filter(l => l.email).length} email)` };
+
+  // ── Pakistani job boards ──────────────────────────────────────────────────
+  // Helper to fetch XML/text (not JSON)
+  const getText = async u => { try { const r = await fetch(u, { headers: { 'User-Agent': UA }, timeout: 20000 }); return r.ok ? r.text() : null; } catch { return null; } };
+  const parseRssItems = xml => (String(xml || '')).match(/<item>[\s\S]*?<\/item>/g) || [];
+  const rssField = (item, tag) => (item.match(new RegExp(`<${tag}><\\!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([^<]*)<\\/${tag}>`)) || []).slice(1).find(Boolean) || '';
+
+  // Rozee.pk RSS — largest Pakistani job board
+  for (const kw of ['AI Engineer', 'Machine Learning', 'Python Developer', 'Backend Developer', 'LLM', 'FastAPI']) {
+    try {
+      const xml = await getText(`https://www.rozee.pk/job/rss/q/${encodeURIComponent(kw)}`);
+      for (const item of parseRssItems(xml).slice(0, 15)) {
+        const title = rssField(item, 'title');
+        const link = rssField(item, 'link') || rssField(item, 'guid');
+        const desc = strip(rssField(item, 'description'));
+        const pubDate = rssField(item, 'pubDate');
+        const company = rssField(item, 'rozee:company') || rssField(item, 'author') || '';
+        if (title && link) push('rozee.pk', title, company, link, desc, pubDate ? Date.parse(pubDate) : Date.now() - 12 * 3600e3, link);
+      }
+    } catch { /* skip */ }
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  // Mustakbil.com RSS — second-largest Pakistani board
+  for (const kw of ['AI Engineer', 'Python Developer', 'Backend Developer']) {
+    try {
+      const xml = await getText(`https://mustakbil.com/jobs/rss/?q=${encodeURIComponent(kw)}&l=Pakistan`);
+      for (const item of parseRssItems(xml).slice(0, 12)) {
+        const title = rssField(item, 'title');
+        const link = rssField(item, 'link') || rssField(item, 'guid');
+        const desc = strip(rssField(item, 'description'));
+        const pubDate = rssField(item, 'pubDate');
+        if (title && link) push('mustakbil', title, '', link, desc, pubDate ? Date.parse(pubDate) : Date.now() - 12 * 3600e3, link);
+      }
+    } catch { /* skip */ }
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  // Jobs.com.pk / Paperpk RSS (Pakistani job aggregators)
+  try {
+    const xml = await getText('https://www.paperpk.com/rss/category/technology-jobs/');
+    for (const item of parseRssItems(xml).slice(0, 20)) {
+      const title = rssField(item, 'title');
+      const link = rssField(item, 'link') || rssField(item, 'guid');
+      const desc = strip(rssField(item, 'description'));
+      const pubDate = rssField(item, 'pubDate');
+      if (title && link && /python|ai|ml|backend|machine learning|llm|fastapi|software engineer/i.test(title + ' ' + desc))
+        push('paperpk', title, '', link, desc, pubDate ? Date.parse(pubDate) : Date.now() - 24 * 3600e3, link);
+    }
+  } catch { /* skip */ }
+
+  const seen2 = new Set();
+  const all = [...uniq, ...leads.slice(uniq.length)].filter(l => !seen2.has(l.url) && seen2.add(l.url));
+  return { ok: true, leads: all, detail: `${all.length} fresh board jobs (${all.filter(l => l.email).length} email)` };
 }
