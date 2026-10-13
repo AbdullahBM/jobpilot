@@ -90,22 +90,31 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // dialog — that filter ignores disabled buttons, so it fails while the send button is
     // briefly disabled/animating after open.  Instead find the dialog by its always-present
     // dismiss/close button, then look for send within it with a generous retry loop.
-    const SEND_RE = /send without a note|send invitation|send now|^send$/i;
-    // Wait up to 8 s for ANY dialog to appear after the Connect/Add-note click.
-    const inviteDlg = page.locator('div[role="dialog"], .artdeco-modal, dialog[open]')
-      .filter({ has: page.locator('button[aria-label*="ismiss"], button[aria-label*="lose"], button[aria-label*="ancel"]').or(page.locator('button.artdeco-modal__dismiss')) })
-      .first();
-    await inviteDlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    // LinkedIn 2026 uses "Send" / "Send invitation" / "Send without a note" / "Submit"
+    // in native <dialog> elements. Include "Submit" for the native dialog submit button.
+    const SEND_RE = /send without a note|send invitation|send now|^send$|^submit$/i;
+    // Wait up to 10 s for ANY dialog/modal to appear after the Connect/Add-note click.
+    // Use a broad selector — the 2026 native <dialog> may not have a dismiss button yet.
+    const inviteDlg = page.locator('div[role="dialog"], .artdeco-modal, dialog[open]').first();
+    await inviteDlg.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
     const dlgScope = (await inviteDlg.count().catch(() => 0)) ? inviteDlg : page;
     let send = dlgScope.getByRole('button', { name: SEND_RE }).first();
-    // Retry up to 10×800 ms — the send button starts disabled and enables after the dialog animates in.
+    // Also try type=submit within the dialog scope (LinkedIn 2026 native <dialog> uses it).
+    const submitBtn = dlgScope.locator('button[type="submit"], input[type="submit"]').first();
+    // Retry up to 14×800 ms — the send button starts disabled and enables after the dialog animates in.
     let sendVisible = false;
-    for (let i = 0; i < 10 && !sendVisible; i++) {
+    for (let i = 0; i < 14 && !sendVisible; i++) {
       sendVisible = await send.isVisible().catch(() => false);
       if (!sendVisible) {
         // also try enabled check — button may be visible but still disabled
         const enabled = await send.isEnabled().catch(() => false);
         if (enabled) { sendVisible = true; break; }
+        // Try type=submit fallback within the dialog
+        if (await submitBtn.isVisible().catch(() => false) && await submitBtn.isEnabled().catch(() => false)) {
+          send = submitBtn;
+          sendVisible = true;
+          break;
+        }
         await SLEEP(800);
       }
     }

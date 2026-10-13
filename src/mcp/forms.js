@@ -207,23 +207,45 @@ async function toForm(page) {
     if (atsUrl) { await page.goto(atsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); await SLEEP(2500); return; }
   }
 
-  // Jobicy.com — click through to embedded application or find apply link.
+  // Jobicy.com — detect off-site apply pattern early.
+  // Jobicy is a job board that links out to the employer's ATS via an auth-gated "Apply Now"
+  // button (jv-open-apply-auth). The page itself never contains a fillable application form.
+  // Strategy:
+  //   1. Check if there's a real embedded form (rare, template-version 1 layouts).
+  //   2. Otherwise look for any direct off-domain apply link in the jv-application-body or
+  //      in the page <head>/<meta> canonical; if found, navigate there directly.
+  //   3. If the auth gate is present (jv-open-apply-auth / jobs-offsite-apply-confirmation-banner),
+  //      return null so applyForm will report needs_manual — off-site auth flow, route via email/connect.
   if (/jobicy\.com/.test(startHost)) {
-    const atsUrl = await page.evaluate(() => {
-      // jobicy embeds application at the same URL with #job-application hash
-      const form = document.querySelector('#job-application form, .application-form form');
-      if (form) return null; // already showing the form
-      for (const a of document.querySelectorAll('a[href]')) {
-        if (/apply|application/i.test(a.innerText + a.href) && !a.href.includes('jobicy.com')) return a.href;
+    const resolved = await page.evaluate(() => {
+      // 1. Real embedded form on the page?
+      const form = document.querySelector('#job-application form:not(.jobicy_unified_form):not(.jh-search), .application-form form');
+      if (form && form.querySelectorAll('input[type="text"], input[type="email"], textarea').length > 1) return { type: 'form' };
+      // 2. Direct external ATS link anywhere in the apply section
+      for (const a of document.querySelectorAll('.jv-application-body a[href], .jv-apply-section a[href], .candidates_can_apply a[href]')) {
+        if (a.href && !a.href.includes('jobicy.com') && /^https?:\/\//.test(a.href)) return { type: 'ats', url: a.href };
       }
+      // 3. Any off-domain apply link on the page
+      for (const a of document.querySelectorAll('a[href]')) {
+        if (/apply/i.test(a.innerText + a.getAttribute('aria-label') || '') && a.href && !a.href.includes('jobicy.com') && /^https?:\/\//.test(a.href)) return { type: 'ats', url: a.href };
+      }
+      // 4. Auth-gated off-site apply (most common case) → signal needs_manual
+      if (document.querySelector('#jv-open-apply-auth, .jv-apply-primary, .jobs-offsite-apply-confirmation-banner')) return { type: 'offsite' };
       return null;
     }).catch(() => null);
-    if (atsUrl) { await page.goto(atsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); await SLEEP(2000); }
-    else {
+
+    if (resolved?.type === 'ats') {
+      await page.goto(resolved.url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await SLEEP(2000);
+      return; // continue to form-fill on the real ATS page
+    }
+    if (resolved?.type === 'form') {
       // scroll to #job-application if present on same page
       await page.evaluate(() => document.querySelector('#job-application')?.scrollIntoView()).catch(() => {});
       await SLEEP(1000);
+      return;
     }
+    // offsite or unresolved — signal via returning without navigating; applyForm will detect no form
     return;
   }
 
