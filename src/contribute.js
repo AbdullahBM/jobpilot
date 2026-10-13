@@ -22,6 +22,12 @@ const git = (...a) => run('git', a, { cwd: ROOT }).then(r => r.stdout.trim())
   .catch(e => { throw new Error((e.stderr || e.stdout || e.message).slice(0, 300)); });
 const gh  = (...a) => run('gh',  a, { cwd: ROOT }).then(r => r.stdout.trim());
 
+function parseGitHubRepo(raw = '') {
+  const s = String(raw).trim().replace(/\.git$/, '');
+  const m = s.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  return m ? m[1] : '';
+}
+
 // ── Author identity ─────────────────────────────────────────────────────────
 // Commits are attributed to the GitHub USERNAME (e.g. "maazbin"), NOT a real name or a
 // random name, using the account's noreply email so no personal email is ever committed.
@@ -102,6 +108,13 @@ async function safeStage() {
  * @returns {Promise<{origin, owner, upstream, base, isFork}>}
  */
 export async function repoInfo() {
+  // In a fork checkout, remotes are authoritative: `gh repo view` may resolve
+  // the upstream repository when an `upstream` remote is present.
+  const remoteOrigin = parseGitHubRepo(await git('remote', 'get-url', 'origin').catch(() => ''));
+  const remoteUpstream = parseGitHubRepo(await git('remote', 'get-url', 'upstream').catch(() => ''));
+  if (remoteOrigin && remoteUpstream && remoteOrigin !== remoteUpstream) {
+    return { origin: remoteOrigin, owner: remoteOrigin.split('/')[0], upstream: remoteUpstream, base: 'main', isFork: true };
+  }
   try {
     const j = JSON.parse(await gh('repo', 'view', '--json', 'nameWithOwner,defaultBranchRef,parent'));
     const upstream = j.parent ? j.parent.nameWithOwner : j.nameWithOwner;
