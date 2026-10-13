@@ -129,17 +129,32 @@ async function toForm(page) {
 
   // lnkd.in shortlinks — follow the redirect to the real URL before processing as a form.
   if (/lnkd\.in\//.test(u)) {
-    await SLEEP(3000); // let the redirect land
+    await SLEEP(3000); // let the initial redirect land
+    // Wait up to 8 seconds total for the URL to navigate away from lnkd.in.
+    await page.waitForURL(url => !url.includes('lnkd.in'), { timeout: 8000 }).catch(() => {});
     const landed = page.url();
     if (/lnkd\.in\//.test(landed)) {
-      // still on lnkd.in — grab the canonical href from the page's <a> redirect element
+      // Still on lnkd.in — try grabbing the canonical href from the page redirect element.
       const href = await page.evaluate(() => {
         const a = document.querySelector('a[href], meta[http-equiv="refresh"]');
         if (a?.tagName === 'A') return a.href;
         if (a?.tagName === 'META') { const m = a.content.match(/url=([^\s;]+)/i); return m ? m[1] : null; }
+        // Look for any anchor that doesn't point back to lnkd.in.
+        for (const el of document.querySelectorAll('a[href]')) {
+          if (!el.href.includes('lnkd.in') && el.href.startsWith('http')) return el.href;
+        }
         return null;
       }).catch(() => null);
-      if (href && !href.includes('lnkd.in')) await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      if (href && !href.includes('lnkd.in')) {
+        await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      } else {
+        // Last resort: click any visible <a> link that isn't a lnkd.in URL.
+        const offDomain = page.locator('a[href]:not([href*="lnkd.in"])').first();
+        if (await offDomain.isVisible().catch(() => false)) {
+          await offDomain.click().catch(() => {});
+          await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+        }
+      }
     }
     await SLEEP(2000);
   }
@@ -155,6 +170,28 @@ async function toForm(page) {
 
   // Himalayas.app — find the "Apply now" external link pointing to real ATS.
   if (/himalayas\.app/.test(startHost)) {
+    // First, try clicking an "Apply now" / "Apply" button — it may trigger a modal or navigate.
+    const applyBtn = page.locator('a[href*="apply"], button').filter({ hasText: /apply( now)?/i }).first();
+    if (await applyBtn.isVisible().catch(() => false)) {
+      const [popup] = await Promise.all([
+        page.context().waitForEvent('page', { timeout: 4000 }).catch(() => null),
+        applyBtn.click().catch(() => {}),
+      ]);
+      if (popup) {
+        await popup.waitForLoadState('domcontentloaded').catch(() => {});
+        const popupUrl = popup.url();
+        await popup.close().catch(() => {});
+        if (popupUrl && !popupUrl.includes('himalayas.app')) {
+          await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          await SLEEP(2500);
+          return;
+        }
+      }
+      await SLEEP(2000);
+      // If the click navigated away from himalayas, we're done.
+      if (!page.url().includes('himalayas.app')) { await SLEEP(1000); return; }
+    }
+    // Now scan for ATS links (post-click modal content may have added new links).
     const atsUrl = await page.evaluate(() => {
       for (const a of document.querySelectorAll('a[href]')) {
         if (/(greenhouse|lever\.co|ashbyhq|workable|smartrecruiters|bamboohr|jobvite|teamtailor|rippling|personio|apply)/i.test(a.href)
@@ -349,11 +386,19 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
     // submit button usually sits at the very bottom of a long form, so it can be below the fold
     // where a sticky footer/overlay intercepts a plain click — hence the scroll + forced + JS
     // click fallbacks instead of a single click() that hangs until the actionability timeout.
-    const btn = page.locator(
-      'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"]), input[type="submit"]'
-    ).first()
-      .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|complete application|^apply$/i }).last())
-      .or(page.locator('a[role="button"]').filter({ hasText: /submit|apply now/i }).first());
+    // For jobicy.com, use a wider selector set with a longer timeout.
+    const isJobicy = /jobicy\.com/.test(hostOf(page.url()));
+    const btn = isJobicy
+      ? page.locator(
+          'button[type="submit"], input[type="submit"], .apply-btn, #apply-button, a.apply-button'
+        ).first()
+          .or(page.locator('button').filter({ hasText: /submit|apply/i }).first())
+        : page.locator(
+          'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"]), input[type="submit"]'
+        ).first()
+          .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|complete application|^apply$/i }).last())
+          .or(page.locator('a[role="button"]').filter({ hasText: /submit|apply now/i }).first());
+    const btnTimeout = isJobicy ? 8000 : 5000;
     // Try to find the button even if it's currently not visible (off-screen / in sticky footer).
     let btnExists = (await btn.count().catch(() => 0)) > 0;
     if (!btnExists) {
@@ -368,14 +413,16 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
     }
     await btn.scrollIntoViewIfNeeded().catch(() => {});
     await SLEEP(300);
-    let clicked = await btn.click({ timeout: 8000 }).then(() => true).catch(() => false);
-    if (!clicked) clicked = await btn.click({ force: true, timeout: 5000 }).then(() => true).catch(() => false);
+    let clicked = await btn.click({ timeout: btnTimeout }).then(() => true).catch(() => false);
+    if (!clicked) clicked = await btn.click({ force: true, timeout: btnTimeout }).then(() => true).catch(() => false);
     if (!clicked) clicked = await btn.evaluate(el => { el.click(); return true; }).catch(() => false);
     if (!clicked) { await encounter('form', 'submit button not clickable on ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'submit button not clickable', finalUrl }; }
     for (let i = 0; i < 20; i++) {
       await SLEEP(1000);
       const t = await page.evaluate(() => document.body.innerText).catch(() => '');
       if (CONFIRM_RE.test(t) || /\/(thanks|thank-you|confirmation|success)/i.test(page.url())) return { ok: true, result: 'submitted', detail: 'confirmation page shown', finalUrl };
+      // Jobicy-specific confirmation: dashboard/my-applications tab visible or URL changed to profile/dashboard.
+      if (isJobicy && (await page.locator('#tab-my-applications').isVisible().catch(() => false) || /\/(my-applications|dashboard|profile)/i.test(page.url()))) return { ok: true, result: 'submitted', detail: 'jobicy — redirected to applications dashboard', finalUrl };
       if (/captcha|verify you are human/i.test(t) && i > 4) return { ok: false, result: 'needs_manual', detail: 'captcha after submit', finalUrl };
     }
     const errs = await page.locator('[role="alert"], .error, [class*="error"]').allInnerTexts().catch(() => []);

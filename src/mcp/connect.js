@@ -115,12 +115,39 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
       if (await mainCol(page, /^pending$/i)) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent instantly (no dialog)' }; }
       const bodyTxt = await page.locator('main').innerText().catch(() => '');
       if (/pending/i.test(bodyTxt.slice(0, 1000))) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent (pending state detected)' }; }
+
+      // Secondary scan: LinkedIn 2026 UI may render the send button outside the dialog scope
+      // or use aria-label variations not matched by the role query above.
+      const secondarySend = page.locator('button').filter({ hasText: /^send$/i })
+        .or(page.locator('[aria-label*="send" i]')).first();
+      if (await secondarySend.isVisible().catch(() => false)) {
+        await secondarySend.click({ timeout: 5000 }).catch(() => {});
+        await SLEEP(3000);
+        const dialogGone = (await page.locator('[data-test-modal-id]').count().catch(() => 1)) === 0;
+        if (dialogGone || await mainCol(page, /^pending$/i)) {
+          await page.close();
+          return { ok: true, result: 'connected_no_note', detail: 'invite sent via secondary send scan' };
+        }
+      }
+
+      // Tertiary scan: any button inside a modal or dialog whose text includes "send".
+      const tertiarySend = page.locator('.artdeco-modal button, dialog button').filter({ hasText: /send/i }).last();
+      if (await tertiarySend.isVisible().catch(() => false)) {
+        await tertiarySend.click({ timeout: 5000 }).catch(() => {});
+        await SLEEP(3000);
+        const dialogGone = (await page.locator('[data-test-modal-id]').count().catch(() => 1)) === 0;
+        if (dialogGone || await mainCol(page, /^pending$/i)) {
+          await page.close();
+          return { ok: true, result: 'connected_no_note', detail: 'invite sent via tertiary modal send scan' };
+        }
+      }
+
       // Also try a broader send button scan on the full page as last resort
       const pageSend = page.getByRole('button', { name: SEND_RE }).first();
       if (await pageSend.isVisible().catch(() => false)) {
         sendVisible = true;
         await pageSend.click({ timeout: 5000 }).catch(() => {});
-        await SLEEP(2000);
+        await SLEEP(3000);
         await page.close();
         return { ok: true, result: 'connected_no_note', detail: 'invite sent via page-level send button' };
       }
@@ -131,10 +158,13 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     let sent = await send.click({ timeout: 5000 }).then(() => true).catch(() => false);
     if (!sent) sent = await send.click({ force: true, timeout: 3000 }).then(() => true).catch(() => false);
     if (!sent) await send.evaluate(el => el.click()).catch(() => {});
-    await SLEEP(2200);
+    // Wait up to 3000 ms for the dialog to close and the pending state to appear.
+    await SLEEP(3000);
     const txt = await page.locator('body').innerText().catch(() => '');
     if (/weekly invitation limit|reached the weekly|you.?ve reached/i.test(txt)) { await page.close(); return { ok: false, result: 'limit', detail: 'LinkedIn weekly invitation limit reached' }; }
-    const pending = !!(await mainCol(page, /^pending$/i)) || /invitation sent|pending/i.test(txt.slice(0, 3000));
+    // Check dialog-gone as an additional confirmation signal.
+    const dialogClosed = (await page.locator('[data-test-modal-id]').count().catch(() => 1)) === 0;
+    const pending = !!(await mainCol(page, /^pending$/i)) || /invitation sent|pending/i.test(txt.slice(0, 3000)) || dialogClosed;
     await page.close();
     return pending
       ? { ok: true, result: usedNote ? 'connected' : 'connected_no_note', detail: usedNote ? 'invite + note sent' : 'invite sent (note quota likely exhausted)', note: usedNote ? note : '' }

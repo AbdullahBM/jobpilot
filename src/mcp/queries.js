@@ -28,7 +28,7 @@ export function buildQueries({ limit = 30 } = {}) {
 
   const out = new Set();
   for (const role of roles) {
-    for (const loc of locationVariants.slice(0, 2)) {   // top 2 location variants per role
+    for (const loc of locationVariants) {   // all location variants per role
       out.add(`hiring ${role}${loc}${remote}`);
       out.add(`we are hiring ${role}${loc}${remote}`);
     }
