@@ -158,6 +158,11 @@ const server = http.createServer(async (req, res) => {
 function onboardingHtml() {
   const p = getProfile();
   const L = p.links || {};
+  const currentSalary = p.currentSalary || {};
+  const salaryExpectationText = (p.salaryExpectations || []).map(x => {
+    const range = x.min === x.max || !x.max ? x.min : `${x.min}-${x.max}`;
+    return `${x.country || 'Worldwide'} = ${x.currency || ''} ${range} / ${x.period || 'month'}`.trim();
+  }).join('\n');
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <title>Job Agent — Setup</title>
 <style>
@@ -255,9 +260,16 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
   <h2>💰 The things the agent should never guess</h2>
   <div class="sub" style="margin:-6px 0 10px">So it can answer screening questions without pausing to ask you.</div>
   <div class="row">
-    <div><label>Expected salary — amount</label><input type="text" id="salAmount" value="${p.salary?.amount || ''}" placeholder="500000"></div>
-    <div><label>Currency / period</label><input type="text" id="salCur" value="${(p.salary?.currency || '') + (p.salary?.period ? ' / ' + p.salary.period : '')}" placeholder="PKR / month"></div>
+    <div><label>Current salary — amount</label><input type="text" id="currentSalAmount" value="${currentSalary.amount || ''}" placeholder="500000"></div>
+    <div><label>Current currency / period</label><input type="text" id="currentSalCur" value="${(currentSalary.currency || '') + (currentSalary.period ? ' / ' + currentSalary.period : '')}" placeholder="PKR / month"></div>
   </div>
+  <div class="row">
+    <div><label>Default expected salary — amount</label><input type="text" id="salAmount" value="${p.salary?.amount || ''}" placeholder="600000"></div>
+    <div><label>Default currency / period</label><input type="text" id="salCur" value="${(p.salary?.currency || '') + (p.salary?.period ? ' / ' + p.salary.period : '')}" placeholder="PKR / month"></div>
+  </div>
+  <label>Country-specific expectations (one per line)</label>
+  <textarea id="salaryExpectations" rows="3" placeholder="Pakistan = PKR 600000-800000 / month&#10;Worldwide = USD 5000 / month">${salaryExpectationText}</textarea>
+  <div class="sub" style="margin:8px 0 0">The agent selects the matching country/currency; if a form only accepts one number, it uses the lower end of the range.</div>
   <div class="row">
     <div><label>Need visa sponsorship?</label><input type="text" id="sponsor" value="${p.workAuth?.needsSponsorship === true ? 'yes' : p.workAuth?.needsSponsorship === false ? 'no' : ''}" placeholder="no"></div>
     <div><label>Authorized to work in</label><input type="text" id="authIn" value="${(p.workAuth?.authorizedIn || []).join(', ')}" placeholder="Pakistan"></div>
@@ -302,6 +314,20 @@ $('save').onclick = async () => {
   const answers = {};
   $('answers').value.split('\\n').forEach(line => { const i = line.indexOf('='); if (i > 0) answers[line.slice(0, i).trim()] = line.slice(i + 1).trim(); });
   if ($('notice').value.trim()) answers['notice period'] = $('notice').value.trim();
+  const parseMoney = raw => {
+    const m = raw.trim().match(/^([A-Za-z]{3})?\s*([\d,]+)(?:\s*(?:-|–|to)\s*([\d,]+))?\s*(?:\/\s*(month|year|hour))?$/i);
+    if (!m) return null;
+    const min = parseInt(m[2].replace(/,/g, ''), 10);
+    const max = parseInt((m[3] || m[2]).replace(/,/g, ''), 10);
+    return { currency: (m[1] || '').toUpperCase(), min, max, period: (m[4] || 'month').toLowerCase() };
+  };
+  const salaryExpectations = $('salaryExpectations').value.split('\\n').map(line => {
+    const i = line.indexOf('=');
+    if (i <= 0) return null;
+    const money = parseMoney(line.slice(i + 1));
+    return money ? { country: line.slice(0, i).trim(), ...money } : null;
+  }).filter(Boolean);
+  const currentSalCur = $('currentSalCur').value.split('/').map(x => x.trim());
   const salCur = $('salCur').value.split('/').map(x => x.trim());
   const sponsorVal = $('sponsor').value.trim().toLowerCase();
   const patch = {
@@ -312,6 +338,8 @@ $('save').onclick = async () => {
     skills: parseList($('skills').value),
     extra: $('extra').value,
     salary: { amount: parseInt($('salAmount').value) || 0, currency: (salCur[0] || '').toUpperCase(), period: salCur[1] || 'month' },
+    currentSalary: { amount: parseInt($('currentSalAmount').value) || 0, currency: (currentSalCur[0] || '').toUpperCase(), period: currentSalCur[1] || 'month' },
+    salaryExpectations,
     workAuth: { needsSponsorship: sponsorVal === 'yes' ? true : sponsorVal === 'no' ? false : undefined, authorizedIn: parseList($('authIn').value) },
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
     preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value },

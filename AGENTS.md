@@ -49,7 +49,9 @@ How this is guaranteed:
 3. **If `profileGaps` is non-empty → `open_onboarding`** and give the user the URL
    (`http://127.0.0.1:7788/onboard`). The form is **pre-filled and editable** — they upload/replace
    their CV by drag-and-drop and paste links, roles, skills, salary, work-authorization, and a
-   **free-form "anything else useful"** box the answer engine reads. They can also optionally
+   **free-form "anything else useful"** box the answer engine reads. Salary can be entered as a
+   current amount plus country-specific expected ranges (for example, Pakistan PKR 600k–800k
+   and Worldwide USD 5k); the matching country/currency is selected per application. They can also optionally
    provide their current employer and companies to avoid; the current employer is always excluded
    from candidate queues. They can reopen `/onboard`
    anytime to change what they gave. Never ask for a file path in chat. Poll `get_profile` until

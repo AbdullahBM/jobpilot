@@ -32,7 +32,9 @@ const DEFAULT_PROFILE = {
   skills: [],            // ["Python","FastAPI","AWS",…]
   summary: '',           // short professional summary
   extra: '',             // FREE-FORM: anything else useful for the agent (context, preferences, notes)
-  salary: {},            // { amount, currency, period }  e.g. {amount:500000,currency:"PKR",period:"month"}
+  salary: {},            // legacy/default expected salary: { amount, currency, period }
+  currentSalary: {},     // current compensation: { amount, currency, period }
+  salaryExpectations: [], // [{ country, min, max, currency, period }]
   workAuth: {},          // { needsSponsorship:bool, authorizedIn:["Pakistan"], willingToRelocate:bool }
 
   // Files
@@ -112,6 +114,8 @@ function load() {
       limits: { ...DEFAULT_PROFILE.limits, ...(saved.limits || {}) },
       consent: { ...DEFAULT_PROFILE.consent, ...(saved.consent || {}) },
       salary: { ...DEFAULT_PROFILE.salary, ...(saved.salary || {}) },
+      currentSalary: { ...DEFAULT_PROFILE.currentSalary, ...(saved.currentSalary || {}) },
+      salaryExpectations: Array.isArray(saved.salaryExpectations) ? saved.salaryExpectations : [],
       workAuth: { ...DEFAULT_PROFILE.workAuth, ...(saved.workAuth || {}) },
     };
   } catch {
@@ -160,11 +164,13 @@ export function updateProfile(patch = {}) {
     smtp:        { ...p.smtp,        ...(patch.smtp || {}) },
     consent:     { ...p.consent,     ...(patch.consent || {}) },
     salary:      { ...p.salary,      ...(patch.salary || {}) },
+    currentSalary: { ...p.currentSalary, ...(patch.currentSalary || {}) },
     workAuth:    { ...p.workAuth,    ...(patch.workAuth || {}) },
   };
   if (Array.isArray(patch.skills)) merged.skills = patch.skills;
   if (Array.isArray(patch.projects)) merged.projects = patch.projects;
   if (Array.isArray(patch.loggedInSources)) merged.loggedInSources = patch.loggedInSources;
+  if (Array.isArray(patch.salaryExpectations)) merged.salaryExpectations = patch.salaryExpectations;
   return persist(merged);
 }
 
