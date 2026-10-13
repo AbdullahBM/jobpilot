@@ -22,6 +22,12 @@ const git = (...a) => run('git', a, { cwd: ROOT }).then(r => r.stdout.trim())
   .catch(e => { throw new Error((e.stderr || e.stdout || e.message).slice(0, 300)); });
 const gh  = (...a) => run('gh',  a, { cwd: ROOT }).then(r => r.stdout.trim());
 
+function parseGitHubRepo(raw = '') {
+  const s = String(raw).trim().replace(/\.git$/, '');
+  const m = s.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  return m ? m[1] : '';
+}
+
 // ── Author identity ─────────────────────────────────────────────────────────
 // Commits are attributed to the GitHub USERNAME (e.g. "maazbin"), NOT a real name or a
 // random name, using the account's noreply email so no personal email is ever committed.
@@ -104,7 +110,8 @@ async function safeStage() {
 export async function repoInfo() {
   try {
     const j = JSON.parse(await gh('repo', 'view', '--json', 'nameWithOwner,defaultBranchRef,parent'));
-    const upstream = j.parent ? j.parent.nameWithOwner : j.nameWithOwner;
+    const parentName = j.parent?.nameWithOwner || (j.parent?.owner?.login && j.parent?.name ? `${j.parent.owner.login}/${j.parent.name}` : '');
+    const upstream = parentName || j.nameWithOwner;
     return {
       origin:   j.nameWithOwner,
       owner:    j.nameWithOwner.split('/')[0],
@@ -113,7 +120,19 @@ export async function repoInfo() {
       isFork:   !!j.parent,
     };
   } catch {
-    return { origin: '', owner: '', upstream: '', base: 'main', isFork: false };
+    // `gh repo view` can fail in a worktree without a GitHub repository context.
+    // Fall back to the configured remotes so self-evolution never constructs
+    // an invalid `gh pr create --repo` invocation.
+    const origin = parseGitHubRepo(await git('remote', 'get-url', 'origin').catch(() => ''));
+    const upstreamRemote = parseGitHubRepo(await git('remote', 'get-url', 'upstream').catch(() => ''));
+    const upstream = upstreamRemote || origin;
+    return {
+      origin,
+      owner: origin.split('/')[0] || '',
+      upstream,
+      base: 'main',
+      isFork: !!upstreamRemote && upstreamRemote !== origin,
+    };
   }
 }
 
@@ -173,6 +192,7 @@ export async function syncBranch() {
 export async function contributeViaPR(message) {
   const info = await repoInfo();
   const { base, upstream, owner, isFork } = info;
+  if (!upstream || !owner) return { ...info, pushed: false, reason: 'GitHub repository identity unavailable' };
   const startBranch = (await git('rev-parse', '--abbrev-ref', 'HEAD').catch(() => base)) || base;
   const branch = `self-evolve/${Date.now()}`;
   try {
