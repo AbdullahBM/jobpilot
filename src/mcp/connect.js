@@ -66,13 +66,97 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
       await encounter('connect', 'no Connect control (follow-only or restricted)', { url: profileUrl, page });
       await page.close(); return { ok: true, result: 'no_connect', detail: 'no Connect option (follow-only / limits)' };
     }
+    // LinkedIn 2026: the Connect control is often an <a href="/preload/custom-invite/?vanityName=...">
+    // that NAVIGATES the page (full navigation, not an overlay). We capture the URL before clicking
+    // so we can detect navigation and handle the custom-invite page directly.
+    const urlBefore = page.url();
     await connectEl.click().catch(() => {});
-    await SLEEP(2600);
-    if (process.env.DEBUG_CONN) console.log('after connect click; addNote count', await page.getByRole('button', { name: /add a note/i }).count());
+    // Wait up to 6 s for either: a dialog to appear, OR a navigation away from the profile page.
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => {}),
+      page.waitForSelector('dialog[open], div[role="dialog"], [data-test-modal]', { timeout: 6000 }).catch(() => {}),
+    ]).catch(() => {});
+    await SLEEP(1000);
+    const urlAfter = page.url();
+    const navigated = urlAfter !== urlBefore && !urlAfter.includes(urlBefore);
+
+    if (process.env.DEBUG_CONN) console.log('after connect click; url:', urlAfter, 'navigated:', navigated);
 
     // note dialog (may be in shadow — getByRole pierces it)
     let usedNote = false;
     const note = connectNote({ posterName, role, company });
+
+    // ── Custom-invite page (LinkedIn 2026 navigation flow) ────────────────────────
+    // When the connect <a> navigates to /preload/custom-invite/ (or similar), the page
+    // renders a standalone invite form with a textarea (the note) and a submit button.
+    // Fill the textarea directly — there is no "Add a note" intermediate button.
+    if (navigated && /custom-invite|invitation|connect/i.test(urlAfter)) {
+      if (withNote) {
+        const ta = page.locator('textarea').first();
+        const taVisible = await ta.isVisible().catch(() => false);
+        if (taVisible) {
+          await ta.fill(note).catch(() => {});
+          await SLEEP(600);
+          usedNote = true;
+        } else {
+          // Wait up to 4 s for textarea to appear (form may still be rendering)
+          await ta.waitFor({ state: 'visible', timeout: 4000 }).catch(() => {});
+          if (await ta.isVisible().catch(() => false)) {
+            await ta.fill(note).catch(() => {});
+            await SLEEP(600);
+            usedNote = true;
+          }
+        }
+      }
+      if (dryRun) {
+        await page.goBack().catch(() => {});
+        await page.close();
+        return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached custom-invite page' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' };
+      }
+      // Click type=submit button on the custom-invite page (starts disabled, enables after textarea fill)
+      const submitOnPage = page.locator('button[type="submit"], input[type="submit"]').first();
+      // Retry up to 15×600 ms for the submit button to become enabled
+      let submitReady = false;
+      for (let i = 0; i < 15 && !submitReady; i++) {
+        const vis = await submitOnPage.isVisible().catch(() => false);
+        const en = await submitOnPage.isEnabled().catch(() => false);
+        if (vis && en) { submitReady = true; break; }
+        // Also check by JS scan (obfuscated classes may prevent Playwright enable detection)
+        if (i >= 2) {
+          const jsEnabled = await page.evaluate(() => {
+            const btn = document.querySelector('button[type="submit"], input[type="submit"]');
+            return btn ? (!btn.disabled && btn.offsetParent !== null) : false;
+          }).catch(() => false);
+          if (jsEnabled) { submitReady = true; break; }
+        }
+        await SLEEP(600);
+      }
+      if (!submitReady) {
+        // Try page-wide role=button with send/submit text
+        const wideSend = page.getByRole('button', { name: /send without a note|send invitation|send now|^send$|^submit$/i }).first();
+        if (await wideSend.isVisible().catch(() => false)) { submitReady = true; }
+      }
+      if (!submitReady) {
+        await encounter('connect', 'send button not found in invite dialog', { url: profileUrl, page });
+        await page.close();
+        return { ok: false, result: 'error', detail: 'send button not found on custom-invite page' };
+      }
+      let sent = await submitOnPage.click({ timeout: 5000 }).then(() => true).catch(() => false);
+      if (!sent) sent = await submitOnPage.evaluate(el => el.click()).then(() => true).catch(() => false);
+      await SLEEP(3000);
+      const bodyAfter = await page.locator('body').innerText().catch(() => '');
+      if (/weekly invitation limit|reached the weekly|you.?ve reached/i.test(bodyAfter)) {
+        await page.close();
+        return { ok: false, result: 'limit', detail: 'LinkedIn weekly invitation limit reached' };
+      }
+      await page.close();
+      return { ok: true, result: usedNote ? 'connected' : 'connected_no_note', detail: usedNote ? 'invite + note sent via custom-invite page' : 'invite sent via custom-invite page', note: usedNote ? note : '' };
+    }
+
+    // ── Classic overlay / dialog flow (non-navigation, dialog appears on same page) ─
+    await SLEEP(1000); // extra settle time if no navigation
+    if (process.env.DEBUG_CONN) console.log('after connect click; addNote count', await page.getByRole('button', { name: /add a note/i }).count());
+
     if (withNote) {
       const addNote = page.getByRole('button', { name: /add a note/i }).first();
       if (await addNote.isVisible().catch(() => false)) {
@@ -81,7 +165,15 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         await ta.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
         if (await ta.isVisible().catch(() => false)) { await ta.fill(note); await SLEEP(400); usedNote = true; }
         else if (process.env.DEBUG_CONN) console.log('textarea not visible after addNote');
-      } else if (process.env.DEBUG_CONN) console.log('addNote not visible');
+      } else {
+        // LinkedIn 2026: no intermediate "Add a note" button — textarea may be directly visible in the dialog
+        const ta = page.locator('dialog textarea, div[role="dialog"] textarea').first();
+        if (await ta.isVisible().catch(() => false)) {
+          await ta.fill(note).catch(() => {});
+          await SLEEP(400);
+          usedNote = true;
+        }
+      }
     }
     if (dryRun) { await page.keyboard.press('Escape').catch(() => {}); await SLEEP(400); await page.getByRole('button', { name: /discard/i }).first().click({ timeout: 2500 }).catch(() => {}); await page.close(); return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached send' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' }; }
 
@@ -93,19 +185,19 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // LinkedIn 2026 uses "Send" / "Send invitation" / "Send without a note" / "Submit"
     // in native <dialog> elements. Include "Submit" for the native dialog submit button.
     const SEND_RE = /send without a note|send invitation|send now|^send$|^submit$/i;
-    // Wait up to 10 s for ANY dialog/modal to appear after the Connect/Add-note click.
+    // Wait up to 8 s for ANY dialog/modal to appear after the Connect/Add-note click.
     // The 2026 LinkedIn UI uses obfuscated gfl* class names — we can't rely on .artdeco-modal.
     // Cast a wide net: div[role="dialog"], native <dialog[open]>, any element with a dismiss/close
     // button indicating a modal overlay is open, or a role=dialog nested anywhere.
     const inviteDlg = page.locator('div[role="dialog"], dialog[open], [data-test-modal], [data-artdeco-is-focused-dialog]').first();
-    await inviteDlg.waitFor({ state: 'visible', timeout: 10000 }).catch(async () => {
+    await inviteDlg.waitFor({ state: 'visible', timeout: 8000 }).catch(async () => {
       // 2026 LinkedIn may use a non-standard overlay without role=dialog.
       // Fall back: wait for any new visible button containing "send" text to appear.
       await page.waitForFunction(
         () => [...document.querySelectorAll('button')].some(b =>
           /send/i.test(b.textContent || b.getAttribute('aria-label') || '') &&
           b.offsetParent !== null && !b.disabled),
-        { timeout: 6000 }
+        { timeout: 5000 }
       ).catch(() => {});
     });
     // Build dialog scope — prefer narrowed scope but fall back to whole page
@@ -113,6 +205,8 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     const dlgScope = dlgCount ? inviteDlg : page;
     let send = dlgScope.getByRole('button', { name: SEND_RE }).first();
     // Also try type=submit within the dialog scope (LinkedIn 2026 native <dialog> uses it).
+    // NOTE: after filling the textarea (usedNote=true), the submit button becomes enabled —
+    // check for it regardless of enabled state first, then wait for it to enable.
     const submitBtn = dlgScope.locator('button[type="submit"], input[type="submit"]').first();
     // Retry up to 14×800 ms — the send button starts disabled and enables after the dialog animates in.
     let sendVisible = false;
@@ -122,12 +216,12 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         // also try enabled check — button may be visible but still disabled
         const enabled = await send.isEnabled().catch(() => false);
         if (enabled) { sendVisible = true; break; }
-        // Try type=submit fallback within the dialog
-        if (await submitBtn.isVisible().catch(() => false) && await submitBtn.isEnabled().catch(() => false)) {
-          send = submitBtn;
-          sendVisible = true;
-          break;
-        }
+        // Try type=submit fallback within the dialog — check visibility only (may still be disabled briefly)
+        const subVis = await submitBtn.isVisible().catch(() => false);
+        const subEn = await submitBtn.isEnabled().catch(() => false);
+        if (subVis && subEn) { send = submitBtn; sendVisible = true; break; }
+        // If note was typed and submit is visible but still disabled, keep retrying (it will enable)
+        if (usedNote && subVis && i < 10) { await SLEEP(800); continue; }
         // 2026 LinkedIn: try page-wide role=button scan every other iteration
         if (i % 2 === 1) {
           const wideSend = page.getByRole('button', { name: SEND_RE }).first();
