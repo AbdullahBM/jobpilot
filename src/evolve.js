@@ -257,6 +257,7 @@ export function learn(question, answer, source = 'agent') {
   const k = qkey(question);
   if (!k || answer == null) return;
   recordEvolutionAudit('learning', k);
+  resolveEvolutionAudit(auditFingerprint('learning', k), `learning recorded from ${source}`);
   const rank = { default: 0, inferred: 1, harvested: 2, agent: 3, user: 4 };
   const cur = one(`SELECT source, pending, question FROM answers WHERE qkey=?`, [k]);
   if (cur && !cur.pending && (rank[cur.source] ?? 0) > (rank[source] ?? 0)) return;
@@ -330,6 +331,7 @@ export function recordAgentAnswer(question, answer, basis = '', meta = {}) {
   const k = qkey(question);
   if (!k || answer == null || String(answer).trim() === '') return;
   recordEvolutionAudit('answer', k);
+  resolveEvolutionAudit(auditFingerprint('answer', k), 'CV/profile-grounded answer recorded for review');
   const cur = one(`SELECT source, pending FROM answers WHERE qkey=?`, [k]);
   // Never overwrite a user-provided answer
   if (cur && cur.pending === 0 && cur.source === 'user') return;
@@ -387,7 +389,9 @@ export function usedAnswer(question) {
 
 export function outcome(lane, key, { win = false, yieldN = 0 } = {}) {
   if (!key) return;
-  recordEvolutionAudit('strategy', `${lane}|${key}`);
+  const auditKey = `${lane}|${key}`;
+  recordEvolutionAudit('strategy', auditKey);
+  resolveEvolutionAudit(auditFingerprint('strategy', auditKey), 'strategy observation recorded');
   getDB().run(
     `INSERT INTO strategy (lane, key, tries, wins, yield) VALUES (?,?,1,?,?)
      ON CONFLICT(lane, key) DO UPDATE SET tries=tries+1, wins=wins+excluded.wins, yield=yield+excluded.yield, last=datetime('now')`,

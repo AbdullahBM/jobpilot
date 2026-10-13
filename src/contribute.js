@@ -249,6 +249,7 @@ export async function contributeViaPR(message) {
 }
 
 const AUDIT_LABEL = 'self-audit';
+const AUDIT_FALLBACK_LABEL = 'enhancement';
 
 function auditTitle(a) { return `Audit: ${a.kind} · ${a.fingerprint}`; }
 
@@ -273,17 +274,29 @@ function auditBody(a) {
  * stay open; resolved events are closed with their resolution and PR link.
  */
 export async function syncEvolutionAuditIssues({ prUrl = '' } = {}) {
+  const { initDB } = await import('./tracker.js');
+  await initDB();
   const info = await repoInfo();
   const repo = info.upstream || info.origin;
   if (!repo) return { created: [], reopened: [], closed: [], linked: [], reason: 'repository identity unavailable' };
   const created = [], reopened = [], closed = [], linked = [];
-  try { await gh('label', 'create', AUDIT_LABEL, '--repo', repo, '--color', '6f42c1', '--description', 'Anonymized self-evolution audit trail'); } catch {}
+  let issueLabel = AUDIT_LABEL;
+  try {
+    const labels = JSON.parse(await gh('label', 'list', '--repo', repo, '--limit', '100', '--json', 'name'));
+    if (!labels.some(x => x.name === AUDIT_LABEL)) {
+      await gh('label', 'create', AUDIT_LABEL, '--repo', repo, '--color', '6f42c1', '--description', 'Anonymized self-evolution audit trail');
+    }
+  } catch {
+    // Contributors may create issues but lack permission to create repository labels.
+    // Use an existing non-PR label and retain the stable Audit: title prefix.
+    issueLabel = AUDIT_FALLBACK_LABEL;
+  }
 
   let remote = [];
-  try { remote = JSON.parse(await gh('issue', 'list', '--repo', repo, '--state', 'all', '--label', AUDIT_LABEL, '--limit', '500', '--json', 'number,title,url,state')); } catch (e) {
+  try { remote = JSON.parse(await gh('issue', 'list', '--repo', repo, '--state', 'all', '--limit', '500', '--json', 'number,title,url,state,labels')); } catch (e) {
     return { created, reopened, closed, linked, reason: e.message };
   }
-  const byTitle = new Map(remote.map(x => [x.title, x]));
+  const byTitle = new Map(remote.filter(x => String(x.title || '').startsWith('Audit: ')).map(x => [x.title, x]));
   const audits = evolutionAudits(300);
 
   for (const a of audits) {
@@ -291,7 +304,7 @@ export async function syncEvolutionAuditIssues({ prUrl = '' } = {}) {
     let issue = byTitle.get(title);
     if (!issue) {
       try {
-        const url = await gh('issue', 'create', '--repo', repo, '--title', title, '--label', AUDIT_LABEL, '--body', auditBody(a));
+        const url = await gh('issue', 'create', '--repo', repo, '--title', title, '--label', issueLabel, '--body', auditBody(a));
         const m = String(url).match(/issues\/(\d+)/);
         markAuditIssue(a.fingerprint, m ? +m[1] : null, url);
         issue = { number: m ? +m[1] : null, title, url, state: 'OPEN' };
