@@ -106,15 +106,30 @@ function queue(channel, limit = 25) {
      AND (posted_at='' OR posted_at IS NULL OR posted_at>=?)
      ORDER BY ${channel === 'email' ? "CASE WHEN source='linkedin_post' THEN 0 ELSE 1 END," : ''}
        CASE WHEN posted_at='' OR posted_at IS NULL THEN 1 ELSE 0 END, posted_at DESC, relevance DESC LIMIT ?`,
-    [channel, MIN_REL[channel], minPosted, limit]);
+    [channel, MIN_REL[channel], minPosted, limit * 3]).filter(locationAllowed).slice(0, limit);
 }
 const capLeft = (k, type) => Math.max(0, DAILY[k] - doneToday(type));
 
+// Country scope is an action gate, not just a search hint: old/global queue entries and
+// broad public-board results must never leak into outreach or applications.
+function locationAllowed(job) {
+  const profile = getProfile();
+  if (profile.preferences?.locationScope !== 'country') return true;
+  const country = String(profile.country || '').trim().toLowerCase();
+  const location = String(job.location || '').trim().toLowerCase();
+  if (!country || !location) return false; // conservative: unknown location is not in scope
+  if (location.includes(country)) return true;
+  // LinkedIn and boards often abbreviate a Pakistan location to its city.
+  if (country === 'pakistan') return /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/.test(location);
+  return false;
+}
+
 // ── ingest helper ────────────────────────────────────────────────────────────
 function ingest(leads) {
-  const good = leads.filter(l => !l.skip && !l.alreadyApplied);
-  const skip = leads.filter(l => l.skip && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped' }));
-  const applied = leads.filter(l => l.alreadyApplied).map(l => ({ ...l, status: 'applied' }));
+  const scoped = leads.filter(locationAllowed);
+  const good = scoped.filter(l => !l.skip && !l.alreadyApplied);
+  const skip = scoped.filter(l => l.skip && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped' }));
+  const applied = scoped.filter(l => l.alreadyApplied).map(l => ({ ...l, status: 'applied' }));
   const n = upsertJobs([...good, ...skip, ...applied]);
   for (const l of skip) { const j = getJob(l.url); if (j && j.status === 'skipped' && !j.notes) setFields(l.url, { notes: l.skipWhy }); }
   return { n, email: good.filter(l => l.email).length };
@@ -159,7 +174,8 @@ async function scout() {
       if (i % 2 === 0 && !loginBackoff('LinkedIn')) {
         const jq = jobQ[0];
         beat('scout', `LI jobs: ${jq}`);
-        for (const geoId of ['92000000', '101022442']) { // Worldwide, Pakistan
+        const geoIds = getProfile().preferences?.locationScope === 'country' ? ['101022442'] : ['92000000', '101022442'];
+        for (const geoId of geoIds) { // Pakistan only in country scope; otherwise worldwide + Pakistan
           const rj = await liJobs(jq, { easyOnly: true, tpr: 86400, geoId, pages: 1 });
           if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); clearLogin('LinkedIn'); }
           else if (notLoggedIn(rj.detail)) flagLogin('LinkedIn', 'Please log into LinkedIn in the JobPilot Chrome window — scraping is paused until you do');
