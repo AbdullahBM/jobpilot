@@ -46,5 +46,6 @@ input.s{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10
 .cbtn.on{background:#22c55e;color:#06240f}.cbtn.off{background:#334155;color:#e2e8f0}
 .stopbtn{margin-top:8px;background:#ef4444;color:#fff;border:none;border-radius:7px;padding:6px 14px;font-weight:700;cursor:pointer}
 .stopbtn:hover{background:#dc2626}
+.cvguard{background:#111a2e;border:1px solid #334155;border-left:3px solid #60a5fa;border-radius:8px;padding:12px 14px;margin-bottom:14px;line-height:1.5}.cvguard p{margin:4px 0}.pct{font-weight:700;color:#60a5fa}.ok{color:#22c55e;font-weight:700}.warn{color:#f59e0b;font-weight:700}
 `.trim();
 }

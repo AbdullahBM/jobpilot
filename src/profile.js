@@ -68,6 +68,9 @@ const DEFAULT_PROFILE = {
     //   'country'   — same country as your location only
     //   'all'       — alias for worldwide (no filtering)
     locationScope: 'worldwide',
+    // Off by default. When enabled, a job-specific draft may be generated from
+    // canonical CV/profile facts after the dashboard explicitly records approval.
+    allowTailoredCv: false,
   },
 
   // Answers to common application questions (agent uses semantically)

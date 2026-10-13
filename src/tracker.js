@@ -3,6 +3,8 @@
 import { createRequire } from 'module';
 import fs from 'fs';
 import { DATA, DB_FILE } from './config.js';
+import { assessJob } from './cv.js';
+import { getProfile } from './profile.js';
 
 fs.mkdirSync(DATA, { recursive: true });
 const require = createRequire(import.meta.url);
@@ -60,6 +62,11 @@ export async function initDB() {
     add('description', "TEXT DEFAULT ''");
     add('attempts', 'INTEGER DEFAULT 0');
     add('updated_at', "TEXT DEFAULT ''");
+    add('cv_match_percent', 'INTEGER DEFAULT NULL');
+    add('cv_drift_percent', 'INTEGER DEFAULT NULL');
+    add('cv_missing_terms', "TEXT DEFAULT ''");
+    add('tailor_status', "TEXT DEFAULT 'not_requested'");
+    add('tailored_cv_path', "TEXT DEFAULT ''");
     save();
     const { initEvolve } = await import('./evolve.js');
     initEvolve();
@@ -98,15 +105,19 @@ export function upsertJobs(list) {
   let n = 0;
   for (const j of list) {
     if (!j.url) continue;
+    const assessment = assessJob(j, getProfile());
     const email = j.email && !isBadEmail(j.email) ? j.email.toLowerCase() : '';
     db.run(
       `INSERT OR IGNORE INTO jobs (source,company,role,remote,location,salary,url,email,portal,status,
-         channel,apply_url,poster_url,poster_name,posted_at,relevance,description,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         channel,apply_url,poster_url,poster_name,posted_at,relevance,description,updated_at,
+         cv_match_percent,cv_drift_percent,cv_missing_terms,tailor_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [j.source || '', j.company || '', j.role || '', j.remote ? 1 : 0, j.location || '', j.salary || '', j.url,
        email, j.portal || 'other', j.status || 'new', j.channel || '', j.applyUrl || j.apply_url || '',
        j.posterUrl || j.poster_url || '', j.posterName || j.poster_name || '', j.postedAt || j.posted_at || '',
-       +j.relevance || 0, (j.description || j.postText || '').slice(0, 2000), nowIso()]
+       +j.relevance || 0, (j.description || j.postText || '').slice(0, 2000), nowIso(),
+       assessment.matchPercent, assessment.driftPercent, assessment.missingTerms.join(', '),
+       assessment.tailoredEligible ? 'approval_required' : 'not_requested']
     );
     if (db.getRowsModified() > 0) { n++; continue; }
     db.run(
@@ -114,9 +125,12 @@ export function upsertJobs(list) {
          email = CASE WHEN email='' OR email IS NULL THEN ? ELSE email END,
          apply_url = CASE WHEN apply_url='' OR apply_url IS NULL THEN ? ELSE apply_url END,
          poster_url = CASE WHEN poster_url='' OR poster_url IS NULL THEN ? ELSE poster_url END,
-         posted_at = CASE WHEN posted_at='' OR posted_at IS NULL THEN ? ELSE posted_at END
+         posted_at = CASE WHEN posted_at='' OR posted_at IS NULL THEN ? ELSE posted_at END,
+         cv_match_percent=?, cv_drift_percent=?, cv_missing_terms=?,
+         tailor_status=CASE WHEN tailor_status='generated' THEN tailor_status ELSE ? END
        WHERE url=?`,
-      [email, j.applyUrl || '', j.posterUrl || '', j.postedAt || '', j.url]);
+      [email, j.applyUrl || '', j.posterUrl || '', j.postedAt || '', assessment.matchPercent,
+       assessment.driftPercent, assessment.missingTerms.join(', '), assessment.tailoredEligible ? 'approval_required' : 'not_requested', j.url]);
   }
   save();
   return n;
