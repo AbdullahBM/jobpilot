@@ -181,7 +181,7 @@ export function choiceAnswer(question, options) {
       basis = 'workAuth.authorizedIn from profile';
     } else if (/convicted|criminal|felony|non-?compete|related to anyone|previously (worked|employed)|currently employed by|been employed by/.test(q)) {
       derived = no; basis = 'standard no for legal screening questions';
-    } else if (/background check|drug test|agree|consent|acknowledge|comfortable|willing|able to|can you|do you have|have you|did you|are you|familiar|experience|worked (with|on|in)|built|shipped|proficient/.test(q)) {
+    } else if (/background check|drug test|agree|consent|acknowledge|comfortable|willing|able to|can you|do you have|have you|did you|are you|familiar|experience|worked (with|on|in)|built|shipped|proficient|startup|fast.?paced|agile|environment/.test(q)) {
       derived = yes; basis = 'standard yes for consent/agreement questions';
     }
   } else if (/years/.test(q)) {

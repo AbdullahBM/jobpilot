@@ -279,7 +279,20 @@ async function connector() {
     if (!j) { beat('connector', 'idle (queue empty)'); await SLEEP(45000); continue; }
     bumpAttempt(j.url);
     if (DRY) { say('connector', `DRY → ${j.poster_name}`); setStatus(j.url, 'connected', 'DRY'); await jitter(PACE.connector); continue; }
+
+    // Try DM first (only works if already connected or open-profile); fall back to connect+note.
     beat('connector', `🔗 ${j.poster_name}`);
+    if (j.poster_url) {
+      const { linkedinDM } = await import('./mcp/apply.js');
+      const dmResult = await linkedinDM({ profileUrl: j.poster_url, role: j.role, company: j.company }).catch(() => null);
+      if (dmResult && dmResult.result === 'dm_sent') {
+        setStatus(j.url, 'connected', 'DM sent'); logConnect(j.poster_url, j.poster_name, j.company, j.role, '', 'dm_sent'); clearLogin('LinkedIn');
+        log('li_connect', j.company, j.role, j.poster_url, 'ok', 'dm_sent');
+        say('connector', `💬 DM sent → ${j.poster_name}`);
+        writeDash(); await jitter(PACE.connector); continue;
+      }
+    }
+
     const r = await connect({ profileUrl: j.poster_url, posterName: j.poster_name, role: j.role, company: j.company });
     if (/^connected/.test(r.result)) { setStatus(j.url, 'connected', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, r.note || '', 'connected'); clearLogin('LinkedIn'); }
     else if (/already/.test(r.result)) { setStatus(j.url, 'skipped', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, '', 'pending'); }

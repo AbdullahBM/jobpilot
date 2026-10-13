@@ -88,19 +88,33 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // The invite dialog (role=dialog / artdeco modal, or the 2026 native <dialog>) carries the
     // Send control. Scope to it so we don't match a stray "Send" elsewhere (messaging/video),
     // and give it a moment to mount after the Connect/Add-note click.
-    const inviteDlg = page.locator(
-      'div[role="dialog"]:has-text("invitation"), div[data-testid="dialog"], .artdeco-modal, dialog[open]'
-    ).filter({ has: page.getByRole('button', { name: /send|add a note/i }) }).first();
-    await inviteDlg.waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    // 2026 LinkedIn uses a native <dialog open> — don't filter by has-text("invitation") since
+    // that text may not be in the dialog; just find the dialog that has a send/connect button.
     const SEND_RE = /send without a note|send invitation|send now|^send$/i;
+    const inviteDlg = page.locator(
+      'div[role="dialog"], .artdeco-modal, dialog[open]'
+    ).filter({ has: page.getByRole('button', { name: SEND_RE }) }).first();
+    await inviteDlg.waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
     const dlgScope = (await inviteDlg.count().catch(() => 0)) ? inviteDlg : page;
     let send = dlgScope.getByRole('button', { name: SEND_RE }).first();
     // short retry: the button can be briefly disabled/animating right after the dialog opens
     let sendVisible = false;
-    for (let i = 0; i < 4 && !sendVisible; i++) { sendVisible = await send.isVisible().catch(() => false); if (!sendVisible) await SLEEP(600); }
+    for (let i = 0; i < 6 && !sendVisible; i++) { sendVisible = await send.isVisible().catch(() => false); if (!sendVisible) await SLEEP(700); }
     if (!sendVisible) {
-      // some profiles send immediately on Connect click (no dialog)
-      if (await mainCol(page, /^pending$/i)) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent (no note dialog)' }; }
+      // 2026 LinkedIn sometimes sends immediately on Connect click (no dialog / quota exhausted note path)
+      // Check: Pending button, or "Pending" text anywhere in the top card area
+      if (await mainCol(page, /^pending$/i)) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent instantly (no dialog)' }; }
+      const bodyTxt = await page.locator('main').innerText().catch(() => '');
+      if (/pending/i.test(bodyTxt.slice(0, 1000))) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent (pending state detected)' }; }
+      // Also try a broader send button scan on the full page as last resort
+      const pageSend = page.getByRole('button', { name: SEND_RE }).first();
+      if (await pageSend.isVisible().catch(() => false)) {
+        sendVisible = true;
+        await pageSend.click({ timeout: 5000 }).catch(() => {});
+        await SLEEP(2000);
+        await page.close();
+        return { ok: true, result: 'connected_no_note', detail: 'invite sent via page-level send button' };
+      }
       await encounter('connect', 'send button not found in invite dialog', { url: profileUrl, page });
       await page.close(); return { ok: false, result: 'error', detail: 'send button not found in invite dialog' };
     }
