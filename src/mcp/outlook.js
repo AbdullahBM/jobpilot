@@ -53,7 +53,9 @@ export async function sendViaOutlook({ to, subject, body, attachmentPath }) {
     } catch {
       const compose = await firstVisible(page, [
         'button[aria-label*="New mail" i]',
+        'button[aria-label*="New email" i]',
         'button[title*="New mail" i]',
+        'button[title*="New email" i]',
       ], 12000);
       await compose.click();
       subjectField = await firstVisible(page, subjectSelectors, 20000);
@@ -63,6 +65,7 @@ export async function sendViaOutlook({ to, subject, body, attachmentPath }) {
       'input[aria-label*="To" i]',
       'input[placeholder*="To" i]',
       'input[role="combobox"][aria-label*="recipient" i]',
+      'div[aria-label*="To" i][contenteditable="true"]',
     ]);
     await toField.fill(to);
     await toField.press('Enter').catch(() => {});
