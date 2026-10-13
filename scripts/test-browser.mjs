@@ -1,6 +1,6 @@
 // test-browser.mjs — Quick sanity check for CDP + LinkedIn session
 // Run: node test-browser.mjs
-import { cdpStatus, getContext, listTabs } from './src/agent/browser.js';
+import { cdpStatus, getContext, listTabs } from '../src/agent/browser.js';
 
 console.log('─── CDP Health Check ───────────────────────────────');
 const status = await cdpStatus();
