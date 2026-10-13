@@ -94,10 +94,23 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // in native <dialog> elements. Include "Submit" for the native dialog submit button.
     const SEND_RE = /send without a note|send invitation|send now|^send$|^submit$/i;
     // Wait up to 10 s for ANY dialog/modal to appear after the Connect/Add-note click.
-    // Use a broad selector — the 2026 native <dialog> may not have a dismiss button yet.
-    const inviteDlg = page.locator('div[role="dialog"], .artdeco-modal, dialog[open]').first();
-    await inviteDlg.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-    const dlgScope = (await inviteDlg.count().catch(() => 0)) ? inviteDlg : page;
+    // The 2026 LinkedIn UI uses obfuscated gfl* class names — we can't rely on .artdeco-modal.
+    // Cast a wide net: div[role="dialog"], native <dialog[open]>, any element with a dismiss/close
+    // button indicating a modal overlay is open, or a role=dialog nested anywhere.
+    const inviteDlg = page.locator('div[role="dialog"], dialog[open], [data-test-modal], [data-artdeco-is-focused-dialog]').first();
+    await inviteDlg.waitFor({ state: 'visible', timeout: 10000 }).catch(async () => {
+      // 2026 LinkedIn may use a non-standard overlay without role=dialog.
+      // Fall back: wait for any new visible button containing "send" text to appear.
+      await page.waitForFunction(
+        () => [...document.querySelectorAll('button')].some(b =>
+          /send/i.test(b.textContent || b.getAttribute('aria-label') || '') &&
+          b.offsetParent !== null && !b.disabled),
+        { timeout: 6000 }
+      ).catch(() => {});
+    });
+    // Build dialog scope — prefer narrowed scope but fall back to whole page
+    const dlgCount = await inviteDlg.count().catch(() => 0);
+    const dlgScope = dlgCount ? inviteDlg : page;
     let send = dlgScope.getByRole('button', { name: SEND_RE }).first();
     // Also try type=submit within the dialog scope (LinkedIn 2026 native <dialog> uses it).
     const submitBtn = dlgScope.locator('button[type="submit"], input[type="submit"]').first();
@@ -114,6 +127,11 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
           send = submitBtn;
           sendVisible = true;
           break;
+        }
+        // 2026 LinkedIn: try page-wide role=button scan every other iteration
+        if (i % 2 === 1) {
+          const wideSend = page.getByRole('button', { name: SEND_RE }).first();
+          if (await wideSend.isVisible().catch(() => false)) { send = wideSend; sendVisible = true; break; }
         }
         await SLEEP(800);
       }
@@ -132,22 +150,31 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
       if (await secondarySend.isVisible().catch(() => false)) {
         await secondarySend.click({ timeout: 5000 }).catch(() => {});
         await SLEEP(3000);
-        const dialogGone = (await page.locator('[data-test-modal-id]').count().catch(() => 1)) === 0;
-        if (dialogGone || await mainCol(page, /^pending$/i)) {
+        if (await mainCol(page, /^pending$/i)) {
           await page.close();
           return { ok: true, result: 'connected_no_note', detail: 'invite sent via secondary send scan' };
         }
       }
 
-      // Tertiary scan: any button inside a modal or dialog whose text includes "send".
-      const tertiarySend = page.locator('.artdeco-modal button, dialog button').filter({ hasText: /send/i }).last();
-      if (await tertiarySend.isVisible().catch(() => false)) {
-        await tertiarySend.click({ timeout: 5000 }).catch(() => {});
+      // Tertiary scan: any button inside a modal, dialog, or overlay whose text includes "send".
+      // The 2026 UI uses gfl* obfuscated classes — use a JS evaluate to find any visible "send" button.
+      const jsSent = await page.evaluate(() => {
+        const buttons = [...document.querySelectorAll('button, input[type="submit"]')];
+        const sendBtn = buttons.find(b => {
+          const txt = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
+          return /^send$|send invitation|send without a note|send now/.test(txt) &&
+                 b.offsetParent !== null && !b.disabled;
+        });
+        if (sendBtn) { sendBtn.click(); return true; }
+        return false;
+      }).catch(() => false);
+      if (jsSent) {
         await SLEEP(3000);
-        const dialogGone = (await page.locator('[data-test-modal-id]').count().catch(() => 1)) === 0;
-        if (dialogGone || await mainCol(page, /^pending$/i)) {
+        const pendingNow = !!(await mainCol(page, /^pending$/i));
+        const bodyNow = await page.locator('body').innerText().catch(() => '');
+        if (pendingNow || /pending|invitation sent/i.test(bodyNow.slice(0, 2000))) {
           await page.close();
-          return { ok: true, result: 'connected_no_note', detail: 'invite sent via tertiary modal send scan' };
+          return { ok: true, result: 'connected_no_note', detail: 'invite sent via JS send button scan' };
         }
       }
 
@@ -172,7 +199,8 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     const txt = await page.locator('body').innerText().catch(() => '');
     if (/weekly invitation limit|reached the weekly|you.?ve reached/i.test(txt)) { await page.close(); return { ok: false, result: 'limit', detail: 'LinkedIn weekly invitation limit reached' }; }
     // Check dialog-gone as an additional confirmation signal.
-    const dialogClosed = (await page.locator('[data-test-modal-id]').count().catch(() => 1)) === 0;
+    // The 2026 LinkedIn UI dropped data-test-modal-id; check for any visible role=dialog instead.
+    const dialogClosed = (await page.locator('div[role="dialog"]:visible, dialog[open]:visible').count().catch(() => 1)) === 0;
     const pending = !!(await mainCol(page, /^pending$/i)) || /invitation sent|pending/i.test(txt.slice(0, 3000)) || dialogClosed;
     await page.close();
     return pending

@@ -443,8 +443,13 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
       await SLEEP(1000);
       const t = await page.evaluate(() => document.body.innerText).catch(() => '');
       if (CONFIRM_RE.test(t) || /\/(thanks|thank-you|confirmation|success)/i.test(page.url())) return { ok: true, result: 'submitted', detail: 'confirmation page shown', finalUrl };
-      // Jobicy-specific confirmation: dashboard/my-applications tab visible or URL changed to profile/dashboard.
-      if (isJobicy && (await page.locator('#tab-my-applications').isVisible().catch(() => false) || /\/(my-applications|dashboard|profile)/i.test(page.url()))) return { ok: true, result: 'submitted', detail: 'jobicy — redirected to applications dashboard', finalUrl };
+      // Jobicy-specific confirmation: dashboard/my-applications tab visible, URL changed to profile/dashboard,
+      // or jobicy appends ?registered=<email> to the job URL after a successful application.
+      if (isJobicy && (
+        await page.locator('#tab-my-applications').isVisible().catch(() => false) ||
+        /\/(my-applications|dashboard|profile)/i.test(page.url()) ||
+        /[?&]registered=/i.test(page.url())
+      )) return { ok: true, result: 'submitted', detail: 'jobicy — application registered (confirmed via URL params)', finalUrl };
       if (/captcha|verify you are human/i.test(t) && i > 4) return { ok: false, result: 'needs_manual', detail: 'captcha after submit', finalUrl };
     }
     const errs = await page.locator('[role="alert"], .error, [class*="error"]').allInnerTexts().catch(() => []);
