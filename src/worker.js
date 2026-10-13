@@ -17,7 +17,7 @@ import { liPosts, liJobs, hnHiring, redditHiring, publicBoards, relToIso } from 
 import { easyApply } from './mcp/easyapply.js';
 import { applyForm } from './mcp/forms.js';
 import { connect } from './mcp/connect.js';
-import { sendViaGmail } from './mcp/gmail.js';
+import { sendViaMailbox } from './mcp/mail.js';
 import { subject as mkSubject, body as mkBody } from './scraper/email_content.js';
 import { writeDash } from './dashboard.js';
 import { startServer } from './server.js';
@@ -79,7 +79,8 @@ async function supervise(name, fn) {
 
 
 // When a site needs the user to (re)log in, surface a ONE-CLICK link on the dashboard.
-const LOGIN_URL = { LinkedIn: 'https://www.linkedin.com/login', Gmail: 'https://mail.google.com/' };
+const LOGIN_URL = { LinkedIn: 'https://www.linkedin.com/login', Gmail: 'https://mail.google.com/', Outlook: 'https://outlook.live.com/mail/0/' };
+const mailboxSite = () => getProfile().emailMode === 'outlook_web' ? 'Outlook' : 'Gmail';
 function flagLogin(site, reason, url) {
   state.loginNeeded = state.loginNeeded || {};
   state.loginNeeded[site] = { url: url || LOGIN_URL[site] || '', reason: reason || '', ts: new Date().toISOString() };
@@ -179,8 +180,9 @@ async function mailer() {
   while (running()) {
    try {
     if (capLeft('email', 'email') <= 0) { beat('mailer', 'daily cap reached'); await SLEEP(10 * 60000); continue; }
-    // If Gmail needs a login, don't hammer it — show the banner and wait, re-probing every ~3 min.
-    if (loginBackoff('Gmail')) { beat('mailer', 'paused — waiting for you to log into Gmail'); await SLEEP(30000); continue; }
+    // If the selected mailbox needs a login, don't hammer it — show the banner and wait.
+    const mailSite = mailboxSite();
+    if (loginBackoff(mailSite)) { beat('mailer', `paused — waiting for you to log into ${mailSite}`); await SLEEP(30000); continue; }
     const j = queue('email', 12).find(j => !alreadyEmailed(j.email) && !alreadyApplied(j.company, j.role));
     if (!j) { beat('mailer', 'idle (queue empty)'); await SLEEP(30000); continue; }
     const p = getProfile();
@@ -189,9 +191,9 @@ async function mailer() {
     beat('mailer', `emailing ${j.email}`);
     bumpAttempt(j.url);
     if (DRY) { say('mailer', `DRY → ${j.email}`); setStatus(j.url, 'emailed', 'DRY'); await jitter(PACE.mailer); continue; }
-    const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: p.cvPath });
-    if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
-    else if (notLoggedIn(r.detail)) { flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do'); continue; }
+    const r = await sendViaMailbox({ mode: p.emailMode, to: j.email, subject: subj, body, attachmentPath: p.cvPath });
+    if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin(mailSite); }
+    else if (notLoggedIn(r.detail)) { flagLogin(mailSite, `Please log into ${mailSite} in the JobPilot Chrome window — emailing is paused until you do`); continue; }
     else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
     log('email_send', j.company, j.role, j.email, r.ok ? 'ok' : 'fail', r.detail);
     outcome('email_domain', (j.email.split('@')[1] || ''), { win: r.ok });
@@ -305,10 +307,11 @@ async function refresher() {
     if (!DRY && state.loginNeeded && Object.keys(state.loginNeeded).length && Date.now() - lastLoginCheck > 60000) {
       lastLoginCheck = Date.now();
       try {
-        const v = await verifyLogins();
+        const v = await verifyLogins({ mailbox: getProfile().emailMode === 'outlook_web' ? 'outlook' : 'gmail' });
         if (v.linkedin) clearLogin('LinkedIn');
         if (v.gmail) clearLogin('Gmail');
-        if (v.linkedin || v.gmail) { writeDash(); say('main', `login reconciled → LinkedIn:${v.linkedin} Gmail:${v.gmail}`); }
+        if (v.outlook) clearLogin('Outlook');
+        if (v.linkedin || v.gmail || v.outlook) { writeDash(); say('main', `login reconciled → LinkedIn:${v.linkedin} Gmail:${v.gmail} Outlook:${v.outlook}`); }
       } catch {}
     }
     await SLEEP(20000);

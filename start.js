@@ -80,8 +80,8 @@ async function ensureChrome() {
 
   for (let i = 0; i < 20; i++) {
     if (await portOpen(9222)) {
-      if (firstRun) log('FIRST RUN: log into LinkedIn + Gmail in the debug Chrome window once — it stays logged in.');
-      else log('Debug Chrome up (your LinkedIn/Gmail logins persist here).');
+      if (firstRun) log('FIRST RUN: log into LinkedIn + your selected mailbox (Gmail or Outlook) in the debug Chrome window once — it stays logged in.');
+      else log('Debug Chrome up (your LinkedIn/mailbox logins persist here).');
       return;
     }
     await new Promise(r => setTimeout(r, 1000));

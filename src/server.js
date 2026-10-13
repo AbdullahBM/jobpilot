@@ -235,7 +235,15 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
     <option value="country"   ${(p.preferences?.locationScope||'')==='country'  ?'selected':''}>📍 Country — same country as my location only</option>
   </select>
   <label>Sites you're logged into (comma-separated)</label>
-  <input type="text" id="sources" value="${(p.loggedInSources || []).join(', ')}" placeholder="linkedin, gmail">
+  <input type="text" id="sources" value="${(p.loggedInSources || []).join(', ')}" placeholder="linkedin, outlook">
+  <label>Mailbox for application emails</label>
+  <select id="emailMode" style="width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#e2e8f0;font-size:13px">
+    <option value="outlook_web" ${(p.emailMode||'gmail_web')==='outlook_web'?'selected':''}>Outlook Web — send from my Outlook session</option>
+    <option value="gmail_web"  ${(p.emailMode||'')==='gmail_web'?'selected':''}>Gmail Web — send from my Gmail session</option>
+  </select>
+  <label>Different mailbox or provider? (optional)</label>
+  <input type="text" id="mailboxNote" value="${p.mailboxNote || ''}" placeholder="e.g. Proton Mail, Yahoo, or another Outlook account">
+  <div class="sub" style="margin:8px 0 0">JobPilot currently supports Outlook Web and Gmail Web. A different provider is recorded here but will not be used automatically until an adapter exists.</div>
 </div>
 
 <div class="card">
@@ -302,6 +310,8 @@ $('save').onclick = async () => {
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
     preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), locationScope: $('locationScope').value },
     loggedInSources: parseList($('sources').value),
+    emailMode: $('emailMode').value,
+    mailboxNote: $('mailboxNote').value,
     answers,
   };
   $('saveStatus').textContent = 'Saving…';

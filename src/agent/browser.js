@@ -70,9 +70,9 @@ export async function newPage(timeout = 30000) {
 
 // Verify a REAL logged-in session by navigating and reading auth signals —
 // not by checking whether a tab happens to be open (a fresh profile has none).
-// Returns { linkedin: bool, gmail: bool, detail: {...} }.
-export async function verifyLogins() {
-  const out = { linkedin: false, gmail: false, detail: {} };
+// Returns { linkedin: bool, gmail: bool, outlook: bool, detail: {...} }.
+export async function verifyLogins({ mailbox = 'gmail' } = {}) {
+  const out = { linkedin: false, gmail: false, outlook: false, detail: {} };
   let page;
   try {
     page = await newPage(35000);
@@ -97,14 +97,28 @@ export async function verifyLogins() {
     out.detail.linkedin = li.why;
   } catch (e) { out.detail.linkedin = 'error: ' + e.message; }
 
-  // Gmail: inbox loads at mail.google.com/mail (no accounts.google.com redirect).
-  try {
-    await page.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await page.waitForTimeout(2500);
-    const gurl = page.url();
-    out.gmail = /mail\.google\.com\/mail/.test(gurl) && !/accounts\.google\.com|ServiceLogin|signin/.test(gurl);
-    out.detail.gmail = out.gmail ? 'inbox loaded' : ('redirected: ' + gurl);
-  } catch (e) { out.detail.gmail = 'error: ' + e.message; }
+  if (mailbox === 'outlook') {
+    // Outlook Web: a logged-out session redirects to the Microsoft identity host.
+    try {
+      await page.goto('https://outlook.live.com/mail/0/', { waitUntil: 'domcontentloaded', timeout: 35000 });
+      await page.waitForTimeout(2500);
+      const ourl = page.url();
+      const text = await page.locator('body').innerText().catch(() => '');
+      out.outlook = /outlook\.(live|office)\.com\/mail/i.test(ourl)
+        && !/login\.live\.com|login\.microsoftonline\.com|oauth|signin/i.test(ourl)
+        && /inbox|new mail|mail/i.test(text);
+      out.detail.outlook = out.outlook ? 'inbox loaded' : ('redirected or no auth signal: ' + ourl);
+    } catch (e) { out.detail.outlook = 'error: ' + e.message; }
+  } else {
+    // Gmail: inbox loads at mail.google.com/mail (no accounts.google.com redirect).
+    try {
+      await page.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 35000 });
+      await page.waitForTimeout(2500);
+      const gurl = page.url();
+      out.gmail = /mail\.google\.com\/mail/.test(gurl) && !/accounts\.google\.com|ServiceLogin|signin/.test(gurl);
+      out.detail.gmail = out.gmail ? 'inbox loaded' : ('redirected: ' + gurl);
+    } catch (e) { out.detail.gmail = 'error: ' + e.message; }
+  }
 
   await page.close().catch(() => {});
   return out;

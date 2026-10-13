@@ -42,9 +42,10 @@ How this is guaranteed:
 2. **Chrome launches itself.** The server (and the always-on worker) auto-launch the debug Chrome
    on boot, and any browser action self-heals by relaunching Chrome if the port is down — you do
    **not** need to ask the user to start Chrome, and you rarely need `launch_chrome` (it exists only
-   as a manual override). After it's up, if **LinkedIn** or **Gmail** isn't logged in, tell the user
-   in ONE line to log into them in that window; the worker shows a one-click "log in" banner and
-   **pauses that site (backing off) instead of retrying in a loop** until the user is back in.
+   as a manual override). After it's up, if **LinkedIn** or the selected mailbox (**Gmail Web or
+   Outlook Web**) isn't logged in, tell the user in ONE line to log into them in that window; the
+   worker shows a one-click "log in" banner and **pauses that site (backing off) instead of
+   retrying in a loop** until the user is back in.
 3. **If `profileGaps` is non-empty → `open_onboarding`** and give the user the URL
    (`http://127.0.0.1:7788/onboard`). The form is **pre-filled and editable** — they upload/replace
    their CV by drag-and-drop and paste links, roles, skills, salary, work-authorization, and a
@@ -55,7 +56,7 @@ How this is guaranteed:
    - **LinkedIn hiring posts** are the primary source. `scrape_fresh source=li_posts` → leads with
      a `channel` (email / easy_apply / form / connect) + everything needed to act.
    - **Emails found anywhere** (posts, HN "Who is hiring", Reddit, boards) are top priority — act via
-     `send_email` (sends through the user's Gmail, CV auto-attached).
+     `send_email` (sends through the user's selected Gmail Web or Outlook Web session, CV auto-attached).
    - **Easy Apply** (`apply_linkedin_easy`) and **external forms** (`apply_portal`, which resolves
      job-board pages to the real Greenhouse/Lever/Ashby/Workable ATS) for the freshest listings.
    - **Connect + note** (`linkedin_connect`) to the poster when there's no email/form.
@@ -141,11 +142,11 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
   `data/jobs.db` preserves history across runs and across different agents.
 - **Freshest first.** Prefer leads posted in the last 24h; the queues are already ordered that way.
 - **Respect limits** in the profile (daily caps, max attempts, timeouts). The worker enforces them.
-- **Everything is the user's real browser** — email is their Gmail, applies use their sessions. No
+- **Everything is the user's real browser** — email is their selected Gmail or Outlook Web session, applies use their sessions. No
   API keys, no SMTP.
 - **Never put the user's personal data in code or commits.** It lives only in `data/` (gitignored):
   `profile.json`, `jobs.db`, `uploads/`, `evolution/`. Keep it there.
-- **One manual step, at most:** the user logging into LinkedIn + Gmail once in the debug Chrome.
+- **One manual step, at most:** the user logging into LinkedIn + the selected mailbox (Gmail or Outlook) once in the debug Chrome.
 
 ## The always-on worker
 

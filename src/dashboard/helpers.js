@@ -8,7 +8,7 @@ export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;'
 /** Status definitions: { statusKey: [color, tooltip] } */
 export const STATUS = {
   new:          ['#64748b', 'Found, waiting in a queue'],
-  emailed:      ['#22c55e', 'Email sent from your Gmail (CV attached)'],
+  emailed:      ['#22c55e', 'Email sent from your selected mailbox (CV attached)'],
   applied:      ['#3b82f6', 'Application submitted (Easy Apply or external form)'],
   connected:    ['#a855f7', 'LinkedIn connection request sent to the poster'],
   needs_manual: ['#f97316', 'Started but needs you (unknown question, captcha, login-gated ATS)'],

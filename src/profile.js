@@ -71,10 +71,11 @@ const DEFAULT_PROFILE = {
   answers: {},           // free-form key -> value, agent matches by meaning
 
   // Sources the user is logged into (drives which scrapers run)
-  loggedInSources: [],   // ["linkedin","indeed","glassdoor","x","gmail","wellfound"]
+  loggedInSources: [],   // ["linkedin","indeed","glassdoor","x","gmail","outlook","wellfound"]
 
-  // Email sending mode: "gmail_web" (via logged-in Chrome) or "smtp"
+  // Email sending mode: "gmail_web" or "outlook_web" (via logged-in Chrome)
   emailMode: 'gmail_web',
+  mailboxNote: '',        // optional note when the user wants a provider not yet supported
   smtp: { user: '', pass: '', fromName: '' },
 
   // Safety caps

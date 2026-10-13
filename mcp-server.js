@@ -21,7 +21,7 @@ import { liPosts, liJobs, hnHiring, redditHiring, publicBoards } from './src/mcp
 import { initEvolve, pendingQuestions, allAnswers, learn, openEncounters, resolveEncounter, writePlaybook, strategyTable } from './src/evolve.js';
 import { buildQueries, buildListingQueries } from './src/mcp/queries.js';
 import { webResearch, runScript, listScripts } from './src/mcp/runtime.js';
-import { sendViaGmail } from './src/mcp/gmail.js';
+import { sendViaMailbox } from './src/mcp/mail.js';
 import { subject as buildSubject, body as buildBody } from './src/scraper/email_content.js';
 import { launchChrome } from './src/mcp/chrome.js';
 import { startServer } from './src/server.js';
@@ -64,7 +64,7 @@ const TOOLS = [
   // ───────── Onboarding / profile ─────────
   {
     name: 'launch_chrome',
-    description: "Launch the user's real Chrome with the debug port so logged-in sites (LinkedIn/Indeed/Glassdoor/Gmail) become reachable. The AGENT calls this and the user does NOTHING — if Chrome is already open on any port without debugging, this force-closes it and relaunches with the debug port + session restore (tabs/logins come back). Returns state 'relaunched'/'already_up'/'no_chrome'/'timeout'.",
+    description: "Launch the user's real Chrome with the debug port so logged-in sites (LinkedIn/Indeed/Glassdoor/Gmail/Outlook) become reachable. The AGENT calls this and the user does NOTHING — if Chrome is already open on any port without debugging, this force-closes it and relaunches with the debug port + session restore (tabs/logins come back). Returns state 'relaunched'/'already_up'/'no_chrome'/'timeout'.",
     inputSchema: { type: 'object', properties: { force: { type: 'boolean' } } },
     handler: async ({ force }) => ok(await launchChrome({ force })),
   },
@@ -77,17 +77,19 @@ const TOOLS = [
       const tabs = cdp.ok ? await listTabs() : [];
       // Verify REAL logins by navigating + reading auth signals (a fresh dedicated
       // profile has no open tabs, so tab-sniffing falsely reported "not logged in").
-      let logins = { linkedin: false, gmail: false, detail: { note: 'cdp down' } };
-      if (cdp.ok) logins = await verifyLogins();
-      const want = ['linkedin', 'gmail'];
+      const profile = getProfile();
+      const mailbox = profile.emailMode === 'outlook_web' ? 'outlook' : 'gmail';
+      let logins = { linkedin: false, gmail: false, outlook: false, detail: { note: 'cdp down' } };
+      if (cdp.ok) logins = await verifyLogins({ mailbox });
+      const want = ['linkedin', mailbox];
       const loggedIn = want.filter(k => logins[k]);
       const needLogin = want.filter(k => !logins[k]);
       const loginHint = !cdp.ok
         ? 'Chrome debug not up — call launch_chrome.'
         : needLogin.length
-          ? `Please log into: ${needLogin.join(' + ')} in the debug Chrome window (open linkedin.com / mail.google.com, sign in), then continue.`
-          : 'LinkedIn + Gmail sessions verified live.';
-      const LOGIN_URL = { linkedin: 'https://www.linkedin.com/login', gmail: 'https://mail.google.com/' };
+          ? `Please log into: ${needLogin.join(' + ')} in the debug Chrome window, then continue.`
+          : `LinkedIn + ${mailbox} sessions verified live.`;
+      const LOGIN_URL = { linkedin: 'https://www.linkedin.com/login', gmail: 'https://mail.google.com/', outlook: 'https://outlook.live.com/mail/0/' };
       // Hand the user ONE-CLICK links for exactly the sites that need a login.
       const loginLinks = needLogin.map(s => ({ site: s, url: LOGIN_URL[s] }));
       return ok({ chrome: cdp, loggedIn, needLogin, loginLinks, loginDetail: logins.detail, loginHint, profileGaps: profileGaps(), onboarded: isOnboarded(), onboardingUrl: `http://127.0.0.1:${PORT}/onboard`, openTabs: tabs.slice(0, 15) });
@@ -113,8 +115,9 @@ const TOOLS = [
         projects: { type: 'array', description: '[{name, url, blurb}]' },
         preferences: { type: 'object', description: '{roles[], skip[], remoteOnly, minSalary, locations[], keywords[]}' },
         answers: { type: 'object', description: 'free-form Q->A for application forms' },
-        loggedInSources: { type: 'array', description: 'sites user is logged into: linkedin,indeed,glassdoor,x,gmail' },
-        emailMode: { type: 'string', enum: ['gmail_web', 'smtp'] },
+        loggedInSources: { type: 'array', description: 'sites user is logged into: linkedin,indeed,glassdoor,x,gmail,outlook' },
+        emailMode: { type: 'string', enum: ['gmail_web', 'outlook_web'] },
+        mailboxNote: { type: 'string', description: 'optional note if the user wants a different mailbox provider' },
         limits: { type: 'object' },
       },
     },
@@ -187,7 +190,7 @@ const TOOLS = [
   // ───────── Email primitive ─────────
   {
     name: 'send_email',
-    description: "Send an application email through the user's LOGGED-IN Gmail (not SMTP). Auto-attaches the CV from profile. CHECK check_already_actioned first. Respects per-job max attempts. If you omit subject/body, a proven role-aware template is built from the profile (projects, links, signature) — just pass to + company + role. Pass subject/body to override.",
+    description: "Send an application email through the user's selected logged-in Outlook Web or Gmail Web mailbox (not SMTP). Auto-attaches the CV from profile. CHECK check_already_actioned first. Respects per-job max attempts. If you omit subject/body, a proven role-aware template is built from the profile (projects, links, signature) — just pass to + company + role. Pass subject/body to override.",
     inputSchema: { type: 'object', properties: { to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, company: { type: 'string' }, role: { type: 'string' }, jobUrl: { type: 'string' }, attachmentPath: { type: 'string' } }, required: ['to'] },
     handler: async ({ to, subject, body, company, role, jobUrl, attachmentPath }) => {
       const profile = getProfile();
@@ -198,7 +201,7 @@ const TOOLS = [
       const subj = subject || buildSubject(job, profile);
       const text = body || buildBody(job, profile);
       return ok(await timed('send_email', to, { to, subject: subj }, limit, async () => {
-        const r = await sendViaGmail({ to, subject: subj, body: text, attachmentPath: attachmentPath || profile.cvPath });
+        const r = await sendViaMailbox({ mode: profile.emailMode, to, subject: subj, body: text, attachmentPath: attachmentPath || profile.cvPath });
         logEmail(to, company || '', role || '', subj, r.result, jobUrl || '');
         if (r.ok && jobUrl) setStatus(jobUrl, 'emailed');
         writeDash();
@@ -278,7 +281,7 @@ const TOOLS = [
         const subj = buildSubject({ company, role }, profile);
         const text = buildBody({ company, role }, profile);
         const r = await timed('send_email', email, { email }, profile.limits.maxAttemptsPerJob, async () => {
-          const res = await sendViaGmail({ to: email, subject: subj, body: text, attachmentPath: profile.cvPath });
+          const res = await sendViaMailbox({ mode: profile.emailMode, to: email, subject: subj, body: text, attachmentPath: profile.cvPath });
           logEmail(email, company || '', role || '', subj, res.result, lead.url || '');
           return res;
         });

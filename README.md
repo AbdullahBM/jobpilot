@@ -30,7 +30,7 @@ and say *“find and apply to AI jobs.”*
 
 The agent reasons. JobPilot provides:
 
-- **🖐 Hands** — it drives *your* already-logged-in Chrome (LinkedIn, Gmail, ATS) over the DevTools protocol.
+- **🖐 Hands** — it drives *your* already-logged-in Chrome (LinkedIn, Gmail or Outlook, ATS) over the DevTools protocol.
 - **🧠 Memory** — a local dedup database so you never double-apply, across runs or agents.
 - **🧬 A nervous system** — it records every failure, *learns from it*, and gets measurably better each session.
 
@@ -42,7 +42,7 @@ No API keys. No SMTP passwords. No scraping of other people's data. Your session
 
 | Channel | What happens |
 |---|---|
-| ✉️ **Email** | Finds hiring emails in LinkedIn posts, HN "Who is hiring", Reddit & boards → sends a tailored email from **your Gmail**, CV auto-attached & verified. |
+| ✉️ **Email** | Finds hiring emails in LinkedIn posts, HN "Who is hiring", Reddit & boards → sends a tailored email from your selected **Gmail Web or Outlook Web** session, CV auto-attached & verified. |
 | ⚡ **LinkedIn Easy Apply** | Walks the multi-page modal, answers every question, uploads your CV, and **verifies "Application submitted."** |
 | 📋 **External ATS forms** | Greenhouse · Lever · Ashby · Workable — resolves job-board links to the real ATS, fills react-selects / radios / consent, submits, confirms. |
 | 🔗 **LinkedIn connect + note** | When there's no email/form, sends the poster a personalized connection request. |
@@ -204,7 +204,8 @@ get a one-time "approve this MCP server?" prompt — say yes.
 
 Guided by [`AGENTS.md`](AGENTS.md), it checks setup (`onboard_status`), launches your Chrome
 (`launch_chrome`, restoring your tabs/logins), opens a local **setup form** where you drag-and-drop
-your CV and paste your links/roles (never a file path in chat), then scrapes, dedups, emails, and
+your CV, paste your links/roles, and choose whether application email comes from Gmail Web or Outlook Web
+(with a note field for a different mailbox; unsupported providers are not used automatically), then scrapes, dedups, emails, and
 applies — reporting live on the dashboard. If a login ever lapses, it shows a one-click
 "log in here" link.
 
@@ -270,7 +271,7 @@ jobpilot/
 │   ├── tracker.js          # jobs DB + dedup guards + channel queues
 │   ├── dashboard/          # modular dashboard: index.js (coordinator) + styles + helpers + partials/
 │   ├── server.js           # local web server: onboarding, dashboard, /api/answers, /evidence
-│   └── mcp/                # sources · easyapply · forms · connect · answers · gmail · chrome
+│   └── mcp/                # sources · easyapply · forms · connect · answers · gmail · outlook · mail · chrome
 ├── scripts/
 │   ├── worker-forever.mjs  # respawns the worker process if it ever dies (never-stop)
 │   └── ci-security-scan.mjs# CI data-safety gate (blocks any PR that stages data/creds)

@@ -1,7 +1,7 @@
 // src/mcp/chrome.js — Chrome launcher, the PROVEN LEGACY WAY.
 // Launches a SEPARATE Chrome instance on a dedicated data dir + debug port.
 // It NEVER touches your day-to-day Chrome — both run side by side.
-// You log into LinkedIn + Gmail in this debug Chrome ONCE; it persists.
+// You log into LinkedIn plus the selected mailbox (Gmail or Outlook) in this debug Chrome ONCE; it persists.
 import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -67,8 +67,8 @@ export async function launchChrome() {
         state: firstRun ? 'launched_fresh' : 'launched',
         firstRun,
         detail: firstRun
-          ? 'Opened a dedicated debug Chrome (separate from your normal Chrome). FIRST RUN — log into LinkedIn + Gmail in THIS window once; it stays logged in for future runs.'
-          : 'Opened the dedicated debug Chrome (your LinkedIn/Gmail logins persist here). Your normal Chrome is untouched.',
+          ? 'Opened a dedicated debug Chrome (separate from your normal Chrome). FIRST RUN — log into LinkedIn plus your selected mailbox in THIS window once; it stays logged in for future runs.'
+          : 'Opened the dedicated debug Chrome (your LinkedIn/mailbox logins persist here). Your normal Chrome is untouched.',
       };
     }
     await new Promise(r => setTimeout(r, 1000));
