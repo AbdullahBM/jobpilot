@@ -111,33 +111,35 @@ function queue(channel, limit = 25) {
 const capLeft = (k, type) => Math.max(0, DAILY[k] - doneToday(type));
 
 // Country scope is an action gate, not just a search hint: old/global queue entries and
-// broad public-board results must never leak into outreach or applications.
+// Pakistan-only action gate — applied at queue time so non-Pakistan jobs never reach outreach.
+const PK_CITIES = /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/i;
+const GEO_LOCK_ACTION = /\b(us|u\.s\.|usa|united states|uk|u\.k\.|united kingdom|eu|europe|european union|canada|india|brazil|latam|germany|australia|singapore|hong kong)[- ]?(only|based only|residents? only|citizens? only|timezone|tz)\b|\bmust (be|reside|live|work) (located |based )?in (the )?(us|usa|uk|eu|canada|india|europe)\b|\bus citizen|security clearance|\bh1b\b|\bno[- ]?sponsorship\b/i;
+
 function locationAllowed(job) {
   const profile = getProfile();
   if (profile.preferences?.locationScope !== 'country') return true;
-  const country = String(profile.country || '').trim().toLowerCase();
-  const location = String(job.location || '').trim().toLowerCase();
-  const source = String(job.source || '').toLowerCase();
 
-  // Pakistani job boards always produce Pakistan-scope jobs — trust the source.
-  if (country === 'pakistan' && /rozee|mustakbil/.test(source)) return true;
+  const location = String(job.location || '').toLowerCase();
+  const source   = String(job.source   || '').toLowerCase();
+  const desc     = String(job.description || '').slice(0, 600).toLowerCase();
 
-  // Remote jobs with NO location field: allow them through.
-  // Most global remote job boards (remoteok, remotive, himalayas, arbeitnow, jobicy)
-  // don't set a location — blocking them left 785 jobs stuck in `new` forever.
-  if (!location && job.remote) return true;
+  // 1. Pakistani board sources — always in scope
+  if (/rozee|mustakbil/.test(source)) return true;
 
-  // Remote jobs that mention Pakistan anywhere are in scope.
-  if (country === 'pakistan' && job.remote) {
-    const haystack = `${location} ${job.role || ''} ${(job.description || '').slice(0, 300)}`.toLowerCase();
-    if (/pakistan|karachi|lahore|islamabad/.test(haystack)) return true;
+  // 2. Explicit Pakistan location
+  if (location.includes('pakistan') || PK_CITIES.test(location)) return true;
+
+  // 3. LinkedIn posts/easy — targeted via Pakistan queries; allow if desc mentions Pakistan
+  //    or if location is blank (Pakistan-query results won't have a location field)
+  if (/^linkedin/.test(source)) {
+    if (location) return location.includes('pakistan') || PK_CITIES.test(location);
+    if (/pakistan|karachi|lahore|islamabad/.test(desc)) return true;
+    if (GEO_LOCK_ACTION.test(desc)) return false;
+    return true; // blank-location LinkedIn post from a Pakistan query — allow
   }
 
-  // Jobs with explicit location: match country or major city.
-  if (!country || !location) return false;
-  if (location.includes(country)) return true;
-  if (country === 'pakistan') return /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/.test(location);
-  return false;
+  // 4. Everything else must explicitly mention Pakistan in description
+  return /pakistan|karachi|lahore|islamabad/.test(desc);
 }
 
 // ── ingest helper ────────────────────────────────────────────────────────────
