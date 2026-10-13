@@ -77,6 +77,13 @@ export function startBackgroundEvolve({ syncMs = 2 * 60000, contribMs = 10 * 600
   // syncing + contributing). The only gates are on the CONTRIBUTION step: the user's data-safety
   // consent toggle, the worker stand-down (avoid double-contribution), and CI.
 
+  // If JOBPILOT_NO_AUTOWORKER=1, skip the auto-worker and the background contribute loop.
+  // The user must explicitly start the worker / call tools to begin activity.
+  if (process.env.JOBPILOT_NO_AUTOWORKER === '1') {
+    log('JOBPILOT_NO_AUTOWORKER=1 — background self-evolution loop disabled (call npm run worker to start).');
+    return () => {};
+  }
+
   let lastSync = 0, lastContrib = 0, stopped = false;
 
   // AUTO-START the full worker lanes so hunting + applying + self-evolving loops continuously
