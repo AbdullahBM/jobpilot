@@ -133,6 +133,44 @@ async function toForm(page) {
     // Wait up to 8 seconds total for the URL to navigate away from lnkd.in.
     await page.waitForURL(url => !url.includes('lnkd.in'), { timeout: 8000 }).catch(() => {});
     const landed = page.url();
+
+    // LinkedIn safety interstitial: "This link will take you to a page that's not on LinkedIn"
+    // The page shows an artdeco-button <a> with the real external URL. Click it to proceed.
+    if (/linkedin\.com/.test(landed)) {
+      const externalHref = await page.evaluate(() => {
+        // artdeco-button <a> on the interstitial page that carries the real destination
+        for (const a of document.querySelectorAll('a[href], a.artdeco-button')) {
+          if (a.href && !a.href.includes('linkedin.com') && a.href.startsWith('http')) return a.href;
+        }
+        return null;
+      }).catch(() => null);
+      if (externalHref) {
+        await page.goto(externalHref, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        await SLEEP(2000);
+        return;
+      }
+      // Fallback: click the visible off-domain link on the interstitial
+      const interstitialLink = page.locator('a[href]:not([href*="linkedin.com"])').first();
+      if (await interstitialLink.isVisible({ timeout: 3000 }).catch(() => false)) {
+        const [popup] = await Promise.all([
+          page.context().waitForEvent('page', { timeout: 4000 }).catch(() => null),
+          interstitialLink.click().catch(() => {}),
+        ]);
+        if (popup) {
+          await popup.waitForLoadState('domcontentloaded').catch(() => {});
+          const dest = popup.url();
+          await popup.close().catch(() => {});
+          if (dest && !dest.includes('linkedin.com')) {
+            await page.goto(dest, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          }
+        } else {
+          await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+        }
+        await SLEEP(2000);
+        return;
+      }
+    }
+
     if (/lnkd\.in\//.test(landed)) {
       // Still on lnkd.in — try grabbing the canonical href from the page redirect element.
       const href = await page.evaluate(() => {

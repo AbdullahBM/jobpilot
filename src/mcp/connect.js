@@ -72,13 +72,26 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     const urlBefore = page.url();
     await connectEl.click().catch(() => {});
     // Wait up to 6 s for either: a dialog to appear, OR a navigation away from the profile page.
+    // LinkedIn 2026 uses a SPA router that may change the URL without firing waitForNavigation —
+    // so we poll the URL manually as well.
     await Promise.race([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => {}),
       page.waitForSelector('dialog[open], div[role="dialog"], [data-test-modal]', { timeout: 6000 }).catch(() => {}),
+      // Poll for URL change (covers SPA navigation that doesn't fire waitForNavigation)
+      (async () => {
+        for (let i = 0; i < 12; i++) {
+          await SLEEP(500);
+          if (page.url() !== urlBefore) return;
+        }
+      })(),
     ]).catch(() => {});
     await SLEEP(1000);
     const urlAfter = page.url();
-    const navigated = urlAfter !== urlBefore && !urlAfter.includes(urlBefore);
+    // navigated is true when the URL changed. The extra guard `!urlAfter.includes(urlBefore)` is
+    // intentionally relaxed: only keep it for non-linkedin domains where one URL could embed another.
+    // For LinkedIn profile → custom-invite navigation, the URLs share the linkedin.com domain but
+    // differ in path, so a simple inequality check is sufficient and more reliable.
+    const navigated = urlAfter !== urlBefore;
 
     if (process.env.DEBUG_CONN) console.log('after connect click; url:', urlAfter, 'navigated:', navigated);
 
@@ -90,7 +103,10 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // When the connect <a> navigates to /preload/custom-invite/ (or similar), the page
     // renders a standalone invite form with a textarea (the note) and a submit button.
     // Fill the textarea directly — there is no "Add a note" intermediate button.
-    if (navigated && /custom-invite|invitation|connect/i.test(urlAfter)) {
+    // Also handle the case where `navigated` is false but we're already on the custom-invite page
+    // (LinkedIn SPA router sometimes changes the URL without firing Playwright's waitForNavigation).
+    const isCustomInviteUrl = /custom-invite|\/preload\/.*invite/i.test(urlAfter);
+    if (navigated && /custom-invite|invitation|connect/i.test(urlAfter) || isCustomInviteUrl) {
       if (withNote) {
         const ta = page.locator('textarea').first();
         const taVisible = await ta.isVisible().catch(() => false);
@@ -115,34 +131,48 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
       }
       // Click type=submit button on the custom-invite page (starts disabled, enables after textarea fill)
       const submitOnPage = page.locator('button[type="submit"], input[type="submit"]').first();
-      // Retry up to 15×600 ms for the submit button to become enabled
+      // Extra wait after fill to let the React/Vue change handler enable the submit button
+      if (usedNote) await SLEEP(1000);
+      // Retry up to 20×500 ms for the submit button to become enabled
       let submitReady = false;
-      for (let i = 0; i < 15 && !submitReady; i++) {
+      let submitEl = submitOnPage;
+      for (let i = 0; i < 20 && !submitReady; i++) {
         const vis = await submitOnPage.isVisible().catch(() => false);
         const en = await submitOnPage.isEnabled().catch(() => false);
         if (vis && en) { submitReady = true; break; }
         // Also check by JS scan (obfuscated classes may prevent Playwright enable detection)
-        if (i >= 2) {
+        if (i >= 1) {
           const jsEnabled = await page.evaluate(() => {
             const btn = document.querySelector('button[type="submit"], input[type="submit"]');
             return btn ? (!btn.disabled && btn.offsetParent !== null) : false;
           }).catch(() => false);
           if (jsEnabled) { submitReady = true; break; }
         }
-        await SLEEP(600);
-      }
-      if (!submitReady) {
-        // Try page-wide role=button with send/submit text
-        const wideSend = page.getByRole('button', { name: /send without a note|send invitation|send now|^send$|^submit$/i }).first();
-        if (await wideSend.isVisible().catch(() => false)) { submitReady = true; }
+        // Also scan for any visible enabled send button by text (LinkedIn 2026 uses "Send" text)
+        if (i % 2 === 1) {
+          const wideSend = page.getByRole('button', { name: /send without a note|send invitation|send now|^send$|^submit$/i }).first();
+          const wVis = await wideSend.isVisible().catch(() => false);
+          const wEn = await wideSend.isEnabled().catch(() => false);
+          if (wVis && wEn) { submitEl = wideSend; submitReady = true; break; }
+          // JS scan for any enabled button with send-like text (handles obfuscated classes)
+          const jsSendBtn = await page.evaluate(() => {
+            const btns = [...document.querySelectorAll('button, input[type="submit"]')];
+            return btns.some(b => {
+              const txt = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
+              return /^send$|send invitation|send without a note|send now/.test(txt) && !b.disabled && b.offsetParent !== null;
+            });
+          }).catch(() => false);
+          if (jsSendBtn) { submitReady = true; break; }
+        }
+        await SLEEP(500);
       }
       if (!submitReady) {
         await encounter('connect', 'send button not found in invite dialog', { url: profileUrl, page });
         await page.close();
         return { ok: false, result: 'error', detail: 'send button not found on custom-invite page' };
       }
-      let sent = await submitOnPage.click({ timeout: 5000 }).then(() => true).catch(() => false);
-      if (!sent) sent = await submitOnPage.evaluate(el => el.click()).then(() => true).catch(() => false);
+      let sent = await submitEl.click({ timeout: 5000 }).then(() => true).catch(() => false);
+      if (!sent) sent = await submitEl.evaluate(el => el.click()).then(() => true).catch(() => false);
       await SLEEP(3000);
       const bodyAfter = await page.locator('body').innerText().catch(() => '');
       if (/weekly invitation limit|reached the weekly|you.?ve reached/i.test(bodyAfter)) {
