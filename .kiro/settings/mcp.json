@@ -3,8 +3,9 @@
     "jobpilot": {
       "command": "node",
       "args": ["start.js"],
-      "disabled": false,
+      "disabled": true,
       "autoApprove": []
     }
   }
 }
+
