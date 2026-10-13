@@ -110,7 +110,7 @@ export function renderEvolutionTab(enc, learned, audits = []) {
 <p class="dim" style="margin-bottom:8px">Every failure the agent hit, grouped and counted, with a saved screenshot + HTML snapshot. Your coding agent reads <code>data/evolution/PLAYBOOK.md</code>, patches the code, and marks them fixed.</p>
 ${table('enc', ['#', 'Area', 'Count', 'Domain', 'Signature', 'Evidence', 'Sample'], encRows, 'No open encounters 🎉')}
 <h2 style="margin-top:16px">GitHub self-audit ledger (${audits.length})</h2>
-<p class="dim" style="margin-bottom:8px">Every anonymized learning/improvement fingerprint is mirrored to a separate <code>self-audit</code> issue. Resolved audits are closed; code-related audits link their PR.</p>
+<p class="dim" style="margin-bottom:8px">Every anonymized learning/improvement fingerprint is mirrored to a separate GitHub issue with the repository's <code>self-evolve</code> label. Resolved audits are closed; code-related audits link their PR.</p>
 ${table('audits', ['Type', 'Fingerprint', 'Status', 'Occurrences', 'Issue', 'PR'], auditRows, 'No audit events recorded yet')}
 <h2 style="margin-top:16px">Learned answers (${learned.length})</h2>
 ${table('learn', ['Question', 'Answer', 'Source', 'Uses'], learnRows, 'Nothing learned yet')}`.trim();

@@ -248,7 +248,10 @@ export async function contributeViaPR(message) {
   }
 }
 
-const AUDIT_LABEL = 'self-audit';
+// The upstream repository already has this established label. Reuse it for
+// audit records instead of inventing a label that contributors may not be
+// permitted to create on the upstream repository.
+const AUDIT_LABEL = 'self-evolve';
 const AUDIT_FALLBACK_LABEL = 'enhancement';
 
 function auditTitle(a) { return `Audit: ${a.kind} · ${a.fingerprint}`; }
@@ -270,8 +273,9 @@ function auditBody(a) {
 
 /**
  * Mirror the local learning ledger to dedicated GitHub audit issues.
- * Audit issues use `self-audit`, never the `self-evolve` PR label. Open events
- * stay open; resolved events are closed with their resolution and PR link.
+ * Audit issues use the repository's established `self-evolve` label. Open
+ * events stay open; resolved events are closed with their resolution and PR
+ * link.
  */
 export async function syncEvolutionAuditIssues({ prUrl = '' } = {}) {
   const { initDB } = await import('./tracker.js');
