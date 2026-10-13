@@ -55,6 +55,7 @@ const DEFAULT_PROFILE = {
   preferences: {
     roles: [],           // ["AI Engineer", "ML Engineer", "Backend Engineer"]
     skip: [],            // ["sales", "junior", "intern"]
+    avoidCompanies: [],  // employer/company names to never apply to (current employer is also excluded)
     remoteOnly: true,
     minSalary: 0,
     locations: [],       // acceptable locations, empty = anywhere
@@ -126,6 +127,25 @@ function persist(p) {
 
 export function getProfile() {
   return load();
+}
+
+function normalizeCompany(value = '') {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** Return the configured current/avoided company name found in text, or ''. */
+export function excludedCompanyMatch(text = '', profile = getProfile()) {
+  const hay = normalizeCompany(text);
+  if (!hay) return '';
+  const names = [profile.currentCompany, ...(profile.preferences?.avoidCompanies || [])]
+    .map(v => String(v || '').trim())
+    .filter(v => normalizeCompany(v).length >= 3);
+  return names.find(name => hay.includes(normalizeCompany(name))) || '';
+}
+
+/** Whether a lead mentions the current employer or an explicitly avoided company. */
+export function isExcludedCompany(text = '', profile = getProfile()) {
+  return Boolean(excludedCompanyMatch(text, profile));
 }
 
 /** Deep patch. Pass nested objects to merge them. */
