@@ -187,8 +187,9 @@ async function mailer() {
     const job = { ...j, posterName: j.poster_name, description: j.description };
     const subj = mkSubject(job, p), body = mkBody(job, p);
     beat('mailer', `emailing ${j.email}`);
+    // Dry runs must be observational: do not consume attempts or mark a lead as sent.
+    if (DRY) { say('mailer', `DRY → ${j.email}`); await jitter(PACE.mailer); continue; }
     bumpAttempt(j.url);
-    if (DRY) { say('mailer', `DRY → ${j.email}`); setStatus(j.url, 'emailed', 'DRY'); await jitter(PACE.mailer); continue; }
     const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: p.cvPath });
     if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
     else if (notLoggedIn(r.detail)) { flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do'); continue; }
@@ -217,8 +218,9 @@ async function applier() {
     const list = queue(chan, 15).filter(j => !alreadyApplied(j.company, j.role));
     const j = list.find(j => !learnedSkip('form_domain', domainOf(j.apply_url || j.url)));
     if (!j) { beat('applier', `idle (${chan} queue empty)${liCooling ? ' · LinkedIn cooling down' : ''}`); await SLEEP(12000); continue; }
+    // Dry runs must be observational: do not consume attempts or mark a lead applied.
+    if (DRY) { say('applier', `DRY ${chan} → ${j.role}`); await jitter(PACE.applier); continue; }
     bumpAttempt(j.url);
-    if (DRY) { say('applier', `DRY ${chan} → ${j.role}`); setStatus(j.url, 'applied', 'DRY'); await jitter(PACE.applier); continue; }
     try {
       if (doEasy) {
         beat('applier', `⚡ ${j.role} @ ${j.company}`);
@@ -277,8 +279,9 @@ async function connector() {
     if (needsLogin('LinkedIn')) { beat('connector', 'paused — waiting for you to log into LinkedIn'); await SLEEP(60000); continue; }
     const j = queue('connect', 15).find(j => j.poster_url && !alreadyConnected(j.poster_url) && !alreadyApplied(j.company, j.role));
     if (!j) { beat('connector', 'idle (queue empty)'); await SLEEP(45000); continue; }
+    // Dry runs must be observational: do not consume attempts or mark a lead connected.
+    if (DRY) { say('connector', `DRY → ${j.poster_name}`); await jitter(PACE.connector); continue; }
     bumpAttempt(j.url);
-    if (DRY) { say('connector', `DRY → ${j.poster_name}`); setStatus(j.url, 'connected', 'DRY'); await jitter(PACE.connector); continue; }
     beat('connector', `🔗 ${j.poster_name}`);
     const r = await connect({ profileUrl: j.poster_url, posterName: j.poster_name, role: j.role, company: j.company });
     if (/^connected/.test(r.result)) { setStatus(j.url, 'connected', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, r.note || '', 'connected'); clearLogin('LinkedIn'); }
