@@ -86,20 +86,29 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     if (dryRun) { await page.keyboard.press('Escape').catch(() => {}); await SLEEP(400); await page.getByRole('button', { name: /discard/i }).first().click({ timeout: 2500 }).catch(() => {}); await page.close(); return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached send' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' }; }
 
     // The invite dialog (role=dialog / artdeco modal, or the 2026 native <dialog>) carries the
-    // Send control. Scope to it so we don't match a stray "Send" elsewhere (messaging/video),
-    // and give it a moment to mount after the Connect/Add-note click.
-    // 2026 LinkedIn uses a native <dialog open> — don't filter by has-text("invitation") since
-    // that text may not be in the dialog; just find the dialog that has a send/connect button.
+    // Send control. IMPORTANT: do NOT use `has: getByRole('button', SEND_RE)` to locate the
+    // dialog — that filter ignores disabled buttons, so it fails while the send button is
+    // briefly disabled/animating after open.  Instead find the dialog by its always-present
+    // dismiss/close button, then look for send within it with a generous retry loop.
     const SEND_RE = /send without a note|send invitation|send now|^send$/i;
-    const inviteDlg = page.locator(
-      'div[role="dialog"], .artdeco-modal, dialog[open]'
-    ).filter({ has: page.getByRole('button', { name: SEND_RE }) }).first();
-    await inviteDlg.waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    // Wait up to 8 s for ANY dialog to appear after the Connect/Add-note click.
+    const inviteDlg = page.locator('div[role="dialog"], .artdeco-modal, dialog[open]')
+      .filter({ has: page.locator('button[aria-label*="ismiss"], button[aria-label*="lose"], button[aria-label*="ancel"]').or(page.locator('button.artdeco-modal__dismiss')) })
+      .first();
+    await inviteDlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
     const dlgScope = (await inviteDlg.count().catch(() => 0)) ? inviteDlg : page;
     let send = dlgScope.getByRole('button', { name: SEND_RE }).first();
-    // short retry: the button can be briefly disabled/animating right after the dialog opens
+    // Retry up to 10×800 ms — the send button starts disabled and enables after the dialog animates in.
     let sendVisible = false;
-    for (let i = 0; i < 6 && !sendVisible; i++) { sendVisible = await send.isVisible().catch(() => false); if (!sendVisible) await SLEEP(700); }
+    for (let i = 0; i < 10 && !sendVisible; i++) {
+      sendVisible = await send.isVisible().catch(() => false);
+      if (!sendVisible) {
+        // also try enabled check — button may be visible but still disabled
+        const enabled = await send.isEnabled().catch(() => false);
+        if (enabled) { sendVisible = true; break; }
+        await SLEEP(800);
+      }
+    }
     if (!sendVisible) {
       // 2026 LinkedIn sometimes sends immediately on Connect click (no dialog / quota exhausted note path)
       // Check: Pending button, or "Pending" text anywhere in the top card area

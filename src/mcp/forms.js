@@ -10,7 +10,7 @@ import { encounter, askLater, learn } from '../evolve.js';
 import fs from 'fs';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
-const CONFIRM_RE = /thank(s| you) for (applying|your (application|interest))|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)/i;
+const CONFIRM_RE = /thank(s| you) for (applying|your (application|interest))|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)|your application is (complete|submitted|received)|application submitted|applied successfully|you('ve| have) applied|congrat|we will be in touch|we.?ll be in touch|check your email.*application/i;
 
 const SCAN = () => {
   const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return (r.width > 0 || r.height > 0 || el.type === 'file' || el.type === 'radio' || el.type === 'checkbox') && s.visibility !== 'hidden'; };
@@ -46,7 +46,7 @@ const SCAN = () => {
 };
 
 // Job-board description pages (not real forms). Their apply link redirects to the true ATS.
-const BOARD_HOST = /(^|\.)(remoteok\.com|remotive\.com|jobicy\.com|himalayas\.app|weworkremotely\.com|wellfound\.com|arbeitnow\.com|aihackerjobs\.com)$/i;
+const BOARD_HOST = /(^|\.)(remoteok\.com|remotive\.com|jobicy\.com|himalayas\.app|weworkremotely\.com|wellfound\.com|arbeitnow\.com|aihackerjobs\.com|lnkd\.in|paperpk\.com|rozee\.pk|mustakbil\.com)$/i;
 const hostOf = u => { try { return new URL(u).hostname; } catch { return ''; } };
 
 // ── Indeed: extract the real ATS link embedded in the posting, or fall back to
@@ -127,13 +127,67 @@ async function toForm(page) {
   if (/jobs\.lever\.co\/[^/]+\/[0-9a-f-]{36}$/.test(u)) { await page.goto(u + '/apply', { waitUntil: 'domcontentloaded' }); return; }
   if (/jobs\.ashbyhq\.com\/[^/]+\/[0-9a-f-]{36}\/?$/.test(u)) { await page.goto(u.replace(/\/$/, '') + '/application', { waitUntil: 'domcontentloaded' }); return; }
 
-  const startHost = hostOf(u);
+  // lnkd.in shortlinks — follow the redirect to the real URL before processing as a form.
+  if (/lnkd\.in\//.test(u)) {
+    await SLEEP(3000); // let the redirect land
+    const landed = page.url();
+    if (/lnkd\.in\//.test(landed)) {
+      // still on lnkd.in — grab the canonical href from the page's <a> redirect element
+      const href = await page.evaluate(() => {
+        const a = document.querySelector('a[href], meta[http-equiv="refresh"]');
+        if (a?.tagName === 'A') return a.href;
+        if (a?.tagName === 'META') { const m = a.content.match(/url=([^\s;]+)/i); return m ? m[1] : null; }
+        return null;
+      }).catch(() => null);
+      if (href && !href.includes('lnkd.in')) await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+    await SLEEP(2000);
+  }
+
+  const startHost = hostOf(page.url());
   const onBoard = BOARD_HOST.test(startHost);
   // On a real ATS page that already shows a form, stop.
   if (!onBoard) {
     const fileInputs = await page.locator('input[type="file"]').count();
     const textInputs = await page.locator('input[type="text"]:visible, input[type="email"]:visible').count();
     if (fileInputs || textInputs >= 2) return;
+  }
+
+  // Himalayas.app — find the "Apply now" external link pointing to real ATS.
+  if (/himalayas\.app/.test(startHost)) {
+    const atsUrl = await page.evaluate(() => {
+      for (const a of document.querySelectorAll('a[href]')) {
+        if (/(greenhouse|lever\.co|ashbyhq|workable|smartrecruiters|bamboohr|jobvite|teamtailor|rippling|personio|apply)/i.test(a.href)
+          && !a.href.includes('himalayas.app')) return a.href;
+      }
+      // fallback: any off-domain link in an apply/cta button
+      for (const a of document.querySelectorAll('a[href]')) {
+        const txt = (a.innerText || '').toLowerCase();
+        if ((txt.includes('apply') || txt.includes('apply now')) && !a.href.includes('himalayas.app')) return a.href;
+      }
+      return null;
+    }).catch(() => null);
+    if (atsUrl) { await page.goto(atsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); await SLEEP(2500); return; }
+  }
+
+  // Jobicy.com — click through to embedded application or find apply link.
+  if (/jobicy\.com/.test(startHost)) {
+    const atsUrl = await page.evaluate(() => {
+      // jobicy embeds application at the same URL with #job-application hash
+      const form = document.querySelector('#job-application form, .application-form form');
+      if (form) return null; // already showing the form
+      for (const a of document.querySelectorAll('a[href]')) {
+        if (/apply|application/i.test(a.innerText + a.href) && !a.href.includes('jobicy.com')) return a.href;
+      }
+      return null;
+    }).catch(() => null);
+    if (atsUrl) { await page.goto(atsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); await SLEEP(2000); }
+    else {
+      // scroll to #job-application if present on same page
+      await page.evaluate(() => document.querySelector('#job-application')?.scrollIntoView()).catch(() => {});
+      await SLEEP(1000);
+    }
+    return;
   }
 
   // Collect candidate apply links; on job boards follow them to the external ATS.
@@ -296,10 +350,22 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true }) {
     // where a sticky footer/overlay intercepts a plain click — hence the scroll + forced + JS
     // click fallbacks instead of a single click() that hangs until the actionability timeout.
     const btn = page.locator(
-      'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"])'
+      'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"]), input[type="submit"]'
     ).first()
-      .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|^apply$/i }).last());
-    if (!(await btn.isVisible().catch(() => false))) { await encounter('form', 'form filled but no submit button on ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'no submit button', finalUrl }; }
+      .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|complete application|^apply$/i }).last())
+      .or(page.locator('a[role="button"]').filter({ hasText: /submit|apply now/i }).first());
+    // Try to find the button even if it's currently not visible (off-screen / in sticky footer).
+    let btnExists = (await btn.count().catch(() => 0)) > 0;
+    if (!btnExists) {
+      // Last resort: any button at the bottom of the page whose text looks like submit.
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+      await SLEEP(800);
+      btnExists = (await btn.count().catch(() => 0)) > 0;
+    }
+    if (!btnExists || !(await btn.isVisible().catch(() => false)) && !(await btn.isEnabled().catch(() => false))) {
+      await encounter('form', 'form filled but no submit button on ' + hostOf(finalUrl), { url: finalUrl, page });
+      return { ok: false, result: 'needs_manual', detail: 'no submit button', finalUrl };
+    }
     await btn.scrollIntoViewIfNeeded().catch(() => {});
     await SLEEP(300);
     let clicked = await btn.click({ timeout: 8000 }).then(() => true).catch(() => false);
