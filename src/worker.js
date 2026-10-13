@@ -21,7 +21,7 @@ import { sendViaGmail } from './mcp/gmail.js';
 import { subject as mkSubject, body as mkBody } from './scraper/email_content.js';
 import { writeDash } from './dashboard.js';
 import { startServer } from './server.js';
-import { getProfile } from './profile.js';
+import { getProfile, isExcludedCompany } from './profile.js';
 import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf } from './evolve.js';
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
@@ -102,18 +102,20 @@ const needsLogin = site => !!(state.loginNeeded && state.loginNeeded[site]); // 
 // ── queue selector (shared) ──────────────────────────────────────────────────
 function queue(channel, limit = 25) {
   const minPosted = new Date(Date.now() - MAX_AGE_DAYS[channel] * 86400e3).toISOString();
-  return rows(`SELECT * FROM jobs WHERE status='new' AND channel=? AND relevance>=? AND COALESCE(attempts,0)<3
+  const candidates = rows(`SELECT * FROM jobs WHERE status='new' AND channel=? AND relevance>=? AND COALESCE(attempts,0)<3
      AND (posted_at='' OR posted_at IS NULL OR posted_at>=?)
      ORDER BY ${channel === 'email' ? "CASE WHEN source='linkedin_post' THEN 0 ELSE 1 END," : ''}
        CASE WHEN posted_at='' OR posted_at IS NULL THEN 1 ELSE 0 END, posted_at DESC, relevance DESC LIMIT ?`,
-    [channel, MIN_REL[channel], minPosted, limit]);
+    [channel, MIN_REL[channel], minPosted, limit * 3]);
+  return candidates.filter(j => !isExcludedCompany(`${j.company || ''} ${j.role || ''} ${j.description || ''}`)).slice(0, limit);
 }
 const capLeft = (k, type) => Math.max(0, DAILY[k] - doneToday(type));
 
 // ── ingest helper ────────────────────────────────────────────────────────────
 function ingest(leads) {
-  const good = leads.filter(l => !l.skip && !l.alreadyApplied);
-  const skip = leads.filter(l => l.skip && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped' }));
+  const excluded = l => isExcludedCompany(`${l.company || ''} ${l.role || ''} ${l.description || ''}`);
+  const good = leads.filter(l => !l.skip && !l.alreadyApplied && !excluded(l));
+  const skip = leads.filter(l => (l.skip || excluded(l)) && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped', skipWhy: l.skipWhy || 'company excluded by profile' }));
   const applied = leads.filter(l => l.alreadyApplied).map(l => ({ ...l, status: 'applied' }));
   const n = upsertJobs([...good, ...skip, ...applied]);
   for (const l of skip) { const j = getJob(l.url); if (j && j.status === 'skipped' && !j.notes) setFields(l.url, { notes: l.skipWhy }); }

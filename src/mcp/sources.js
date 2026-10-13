@@ -7,7 +7,7 @@
 //   publicBoards — remoteok / remotive / himalayas / jobicy (email in description if any)
 import fetch from 'node-fetch';
 import { getContext } from '../agent/browser.js';
-import { getProfile } from '../profile.js';
+import { getProfile, excludedCompanyMatch } from '../profile.js';
 import { isBadEmail } from '../tracker.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
@@ -50,6 +50,7 @@ export function score(text = '', title = '') {
   const p = getProfile();
   const t = text.toLowerCase();
   const head = (title || text.slice(0, 220)).toLowerCase();
+  const excluded = excludedCompanyMatch(text, p);
   const skipHit = (p.preferences?.skip || []).find(s => new RegExp(`\\b${s}`, 'i').test(head));
   const terms = new Set([...(p.skills || []), ...(p.preferences?.keywords || [])].map(s => s.toLowerCase()));
   const core = CORE_TITLE.test(head);
@@ -59,7 +60,7 @@ export function score(text = '', title = '') {
   const tooJunior = /\b(freshers?|0\s*[-–]\s*[12]\s*(years|yrs)|entry[- ]level|internship|interns?\b|trainee|graduate program)\b/.test(t.slice(0, 700));
   const equityOnly = /\b(co-?founder|cofondat|equity[- ]only|unpaid|sweat equity|no salary)\b/.test(t.slice(0, 700));
   const geo = GEO_LOCK.test(text.slice(0, 2500));
-  const why = skipHit ? `skip term "${skipHit}"` : !core ? 'title not an engineering role I target' : offStack ? 'off-stack title' : tooJunior ? 'junior/fresher' : equityOnly ? 'co-founder / equity-only' : geo ? 'location-restricted / onsite' : '';
+  const why = excluded ? `excluded company "${excluded}"` : skipHit ? `skip term "${skipHit}"` : !core ? 'title not an engineering role I target' : offStack ? 'off-stack title' : tooJunior ? 'junior/fresher' : equityOnly ? 'co-founder / equity-only' : geo ? 'location-restricted / onsite' : '';
   return { rel: +rel.toFixed(2), skip: !!why, why };
 }
 

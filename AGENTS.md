@@ -48,7 +48,9 @@ How this is guaranteed:
 3. **If `profileGaps` is non-empty → `open_onboarding`** and give the user the URL
    (`http://127.0.0.1:7788/onboard`). The form is **pre-filled and editable** — they upload/replace
    their CV by drag-and-drop and paste links, roles, skills, salary, work-authorization, and a
-   **free-form "anything else useful"** box the answer engine reads. They can reopen `/onboard`
+   **free-form "anything else useful"** box the answer engine reads. They can also optionally
+   provide their current employer and companies to avoid; the current employer is always excluded
+   from candidate queues. They can reopen `/onboard`
    anytime to change what they gave. Never ask for a file path in chat. Poll `get_profile` until
    gaps clear. Setup is automatic: `start.js` / `npm run worker` install dependencies on first run.
 4. **Run the loop (or just start `npm run worker` for them).** Priority order, newest-posted first:

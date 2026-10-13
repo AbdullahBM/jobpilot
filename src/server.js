@@ -205,6 +205,8 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
     <div><label>Headline / current title</label><input type="text" id="headline" value="${p.headline || p.currentTitle || ''}" placeholder="Senior Software Engineer"></div>
     <div><label>Years of experience</label><input type="text" id="years" value="${p.yearsExperience || ''}" placeholder="5"></div>
   </div>
+  <label>Current employer (optional — automatically excluded from applications)</label>
+  <input type="text" id="currentCompany" value="${p.currentCompany || ''}" placeholder="e.g. Smart Working Solutions">
 </div>
 
 <div class="card">
@@ -227,6 +229,9 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
   <input type="text" id="skills" value="${(p.skills || []).join(', ')}" placeholder="Python, FastAPI, AWS, LLM, RAG">
   <label>Skip (comma-separated)</label>
   <input type="text" id="skip" value="${(p.preferences?.skip || []).join(', ')}" placeholder="junior, intern, sales">
+  <label>Employers/companies to avoid (optional, comma-separated)</label>
+  <input type="text" id="avoidCompanies" value="${(p.preferences?.avoidCompanies || []).join(', ')}" placeholder="e.g. former employers, clients, specific companies">
+  <div class="sub" style="margin:8px 0 0">The current employer above is always excluded too. This protects you from accidentally applying where you already work.</div>
   <label>Location scope — how far should the agent search?</label>
   <select id="locationScope" style="width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#e2e8f0;font-size:13px">
     <option value="worldwide" ${(p.preferences?.locationScope||'worldwide')==='worldwide'?'selected':''}>🌍 Worldwide — apply to jobs anywhere</option>
@@ -294,13 +299,14 @@ $('save').onclick = async () => {
   const patch = {
     name: $('name').value, email: $('email').value, phone: $('phone').value, location: $('location').value,
     headline: $('headline').value, currentTitle: $('headline').value,
+    currentCompany: $('currentCompany').value,
     yearsExperience: parseInt($('years').value) || 0,
     skills: parseList($('skills').value),
     extra: $('extra').value,
     salary: { amount: parseInt($('salAmount').value) || 0, currency: (salCur[0] || '').toUpperCase(), period: salCur[1] || 'month' },
     workAuth: { needsSponsorship: sponsorVal === 'yes' ? true : sponsorVal === 'no' ? false : undefined, authorizedIn: parseList($('authIn').value) },
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
-    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), locationScope: $('locationScope').value },
+    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value },
     loggedInSources: parseList($('sources').value),
     answers,
   };
