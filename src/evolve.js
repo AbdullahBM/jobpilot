@@ -40,7 +40,18 @@ export function initEvolve() {
     CREATE TABLE IF NOT EXISTS strategy (
       lane TEXT, key TEXT, tries INTEGER DEFAULT 0, wins INTEGER DEFAULT 0, yield INTEGER DEFAULT 0,
       last TEXT DEFAULT (datetime('now')), PRIMARY KEY (lane, key));
+    CREATE TABLE IF NOT EXISTS evolution_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, fingerprint TEXT UNIQUE,
+      status TEXT DEFAULT 'open', needs_code INTEGER DEFAULT 0, occurrences INTEGER DEFAULT 1,
+      issue_number INTEGER DEFAULT NULL, issue_url TEXT DEFAULT '', pr_url TEXT DEFAULT '',
+      first_seen TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')),
+      resolution TEXT DEFAULT '');
   `);
+  const answerCols = new Set(rows('PRAGMA table_info(answers)').map(c => c.name));
+  const addAnswer = (name, type) => { if (!answerCols.has(name)) db.run(`ALTER TABLE answers ADD COLUMN ${name} ${type}`); };
+  addAnswer('confidence', 'INTEGER DEFAULT NULL');
+  addAnswer('match_percent', 'INTEGER DEFAULT NULL');
+  addAnswer('confidence_basis', "TEXT DEFAULT ''");
   save();
 }
 
@@ -63,6 +74,7 @@ export function domainOf(url = '') {
 /** Record something the agent couldn't handle. Optionally snapshots the page for later diagnosis. */
 export async function encounter(area, detail, { url = '', page = null, scope = null } = {}) {
   const sig = signatureOf(detail);
+  recordEvolutionAudit('encounter', `${area}|${sig}`, { needsCode: true });
   const domain = domainOf(url);
   let snapshot = '';
   if (page) {
@@ -94,7 +106,9 @@ export async function encounter(area, detail, { url = '', page = null, scope = n
 }
 
 export function resolveEncounter(id, resolution, status = 'fixed') {
+  const prior = one(`SELECT area, signature FROM encounters WHERE id=?`, [id]);
   getDB().run(`UPDATE encounters SET status=?, resolution=? WHERE id=?`, [status, resolution, id]);
+  if (prior && status === 'fixed') resolveEvolutionAudit(auditFingerprint('encounter', `${prior.area}|${prior.signature}`), resolution);
   save();
 }
 
@@ -102,6 +116,53 @@ export function openEncounters(limit = 50) {
   return rows(
     `SELECT * FROM encounters WHERE status IN ('open','regressed') ORDER BY count DESC, last_seen DESC LIMIT ?`,
     [limit]);
+}
+
+// ── 1b. GitHub self-evolution audit ledger ──────────────────────────────────
+// Only a stable fingerprint and non-sensitive metadata leave the machine. The
+// original question, answer, URL, screenshot, CV, and profile remain local.
+export function auditFingerprint(kind, value = '') {
+  return h(`${kind}:${value}`);
+}
+
+/** Record a deduplicated learning/improvement event for later GitHub auditing. */
+export function recordEvolutionAudit(kind, value = '', { needsCode = false } = {}) {
+  const fingerprint = auditFingerprint(kind, value);
+  if (!fingerprint) return null;
+  const db = getDB();
+  db.run(
+    `INSERT INTO evolution_audits (kind, fingerprint, needs_code)
+     VALUES (?,?,?)
+     ON CONFLICT(fingerprint) DO UPDATE SET
+       occurrences=occurrences+1, needs_code=MAX(needs_code, excluded.needs_code),
+       status='open', updated_at=datetime('now')`,
+    [String(kind).slice(0, 40), fingerprint, needsCode ? 1 : 0]);
+  save();
+  return fingerprint;
+}
+
+export function evolutionAudits(limit = 200) {
+  return rows(`SELECT * FROM evolution_audits ORDER BY CASE WHEN status='open' THEN 0 ELSE 1 END, updated_at DESC LIMIT ?`, [limit]);
+}
+
+export function markAuditIssue(fingerprint, issueNumber, issueUrl = '') {
+  if (!fingerprint) return;
+  getDB().run(`UPDATE evolution_audits SET issue_number=?, issue_url=?, updated_at=datetime('now') WHERE fingerprint=?`,
+    [issueNumber || null, issueUrl || '', fingerprint]);
+  save();
+}
+
+export function linkAuditPr(fingerprint, prUrl) {
+  if (!fingerprint || !prUrl) return;
+  getDB().run(`UPDATE evolution_audits SET pr_url=?, updated_at=datetime('now') WHERE fingerprint=?`, [prUrl, fingerprint]);
+  save();
+}
+
+export function resolveEvolutionAudit(fingerprint, resolution = '') {
+  if (!fingerprint) return;
+  getDB().run(`UPDATE evolution_audits SET status='resolved', resolution=?, updated_at=datetime('now') WHERE fingerprint=?`,
+    [String(resolution).slice(0, 240), fingerprint]);
+  save();
 }
 
 // ── 2. Answers ───────────────────────────────────────────────────────────────
@@ -195,6 +256,8 @@ export function learnedAnswer(question) {
 export function learn(question, answer, source = 'agent') {
   const k = qkey(question);
   if (!k || answer == null) return;
+  recordEvolutionAudit('learning', k);
+  resolveEvolutionAudit(auditFingerprint('learning', k), `learning recorded from ${source}`);
   const rank = { default: 0, inferred: 1, harvested: 2, agent: 3, user: 4 };
   const cur = one(`SELECT source, pending, question FROM answers WHERE qkey=?`, [k]);
   if (cur && !cur.pending && (rank[cur.source] ?? 0) > (rank[source] ?? 0)) return;
@@ -264,23 +327,42 @@ export function askLater(question, options = []) {
  * @param {string} answer  - the answer the agent used
  * @param {string} [basis] - short description of how it was derived
  */
-export function recordAgentAnswer(question, answer, basis = '') {
+export function recordAgentAnswer(question, answer, basis = '', meta = {}) {
   const k = qkey(question);
   if (!k || answer == null || String(answer).trim() === '') return;
+  recordEvolutionAudit('answer', k);
+  resolveEvolutionAudit(auditFingerprint('answer', k), 'CV/profile-grounded answer recorded for review');
   const cur = one(`SELECT source, pending FROM answers WHERE qkey=?`, [k]);
   // Never overwrite a user-provided answer
   if (cur && cur.pending === 0 && cur.source === 'user') return;
   getDB().run(
-    `INSERT INTO answers (qkey, question, answer, source, pending, options) VALUES (?,?,?,?,2,?)
+    `INSERT INTO answers (qkey, question, answer, source, pending, options, confidence, match_percent, confidence_basis) VALUES (?,?,?,?,2,?,?,?,?)
      ON CONFLICT(qkey) DO UPDATE SET
        answer=excluded.answer,
        source='agent',
        pending=CASE WHEN pending=0 AND source='user' THEN 0 ELSE 2 END,
        uses=uses+1,
        options=excluded.options,
+       confidence=excluded.confidence,
+       match_percent=excluded.match_percent,
+       confidence_basis=excluded.confidence_basis,
        updated_at=datetime('now')`,
-    [k, String(question).slice(0, 300), String(answer).slice(0, 2000), 'agent', basis.slice(0, 200)]);
+    [k, String(question).slice(0, 300), String(answer).slice(0, 2000), 'agent', basis.slice(0, 200),
+      meta.confidence == null ? confidenceFromBasis(basis) : Math.round(meta.confidence),
+      meta.matchPercent == null ? (meta.confidence == null ? confidenceFromBasis(basis) : Math.round(meta.confidence)) : Math.round(meta.matchPercent),
+      String(meta.confidenceBasis || basis).slice(0, 200)]);
   save();
+}
+
+/** Stable, explainable confidence band used by the dashboard report. */
+export function confidenceFromBasis(basis = '') {
+  const b = String(basis).toLowerCase();
+  if (/name|email|phone|linkedin|github|location|country|currentcompany|headline|years|salary|notice|education/.test(b)) return 95;
+  if (/workauth|authorized|sponsorship|legal/.test(b)) return 90;
+  if (/profile\.answers|override|harvested/.test(b)) return 98;
+  if (/generated|cover|summary|free-form/.test(b)) return 70;
+  if (/standard yes|default|remote preference/.test(b)) return 62;
+  return 75;
 }
 
 /** @returns {object[]} Questions pending user input (pending=1). */
@@ -307,6 +389,9 @@ export function usedAnswer(question) {
 
 export function outcome(lane, key, { win = false, yieldN = 0 } = {}) {
   if (!key) return;
+  const auditKey = `${lane}|${key}`;
+  recordEvolutionAudit('strategy', auditKey);
+  resolveEvolutionAudit(auditFingerprint('strategy', auditKey), 'strategy observation recorded');
   getDB().run(
     `INSERT INTO strategy (lane, key, tries, wins, yield) VALUES (?,?,1,?,?)
      ON CONFLICT(lane, key) DO UPDATE SET tries=tries+1, wins=wins+excluded.wins, yield=yield+excluded.yield, last=datetime('now')`,

@@ -46,7 +46,10 @@ export async function getBrowser() {
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      _browser = await chromium.connectOverCDP(wsEndpoint, { timeout: 60000 });
+      // Chrome 155 rejects Playwright's Browser.setDownloadBehavior command
+      // when it is attached over CDP. The worker uses the existing profile's
+      // downloads, so skip Playwright's default context-management commands.
+      _browser = await chromium.connectOverCDP(wsEndpoint, { timeout: 60000, noDefaults: true });
       return _browser;
     } catch (e) {
       lastErr = e;

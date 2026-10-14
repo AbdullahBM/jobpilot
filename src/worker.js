@@ -21,10 +21,11 @@ import { sendViaGmail } from './mcp/gmail.js';
 import { subject as mkSubject, body as mkBody } from './scraper/email_content.js';
 import { writeDash } from './dashboard.js';
 import { startServer } from './server.js';
-import { getProfile } from './profile.js';
+import { getProfile, isExcludedCompany } from './profile.js';
 import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf } from './evolve.js';
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
+import { assessJob, cvAttachmentForJob } from './cv.js';
 
 const DRY = process.env.DRY === '1';
 const DAILY = { email: 50, easy: 80, form: 30, connect: 18 };
@@ -88,6 +89,13 @@ function flagLogin(site, reason, url) {
 }
 function clearLogin(site) { if (state.loginNeeded && state.loginNeeded[site]) { delete state.loginNeeded[site]; delete loginProbeAt[site]; try { fs.writeFileSync(STATE, JSON.stringify(state)); } catch {} } }
 const notLoggedIn = d => /not logged in|log into|authwall|sign in|please log in/i.test(d || '');
+// The user's action policy is to leave roles that require citizenship, a visa,
+// a work permit, or other location-specific work authorization. Treat these as
+// hard skips instead of parking them for manual answers.
+const WORK_AUTH_REQUIRED = /citizenship|work authorization|authorized to work|right to work|work permit|visa sponsorship|sponsorship required|employment visa|security clearance|(?:us|u\.s\.|united states)\s+(?:citizens?|nationals?|permanent residents?|green card holders?|ead holders?)|green card holders?|ead holders?|unable to sponsor|cannot sponsor|can't sponsor|no sponsorship|sponsorship (?:is )?(?:not|isn't) (?:available|provided|offered)|\bw-?2\b/i;
+const requiresWorkAuthorization = r => WORK_AUTH_REQUIRED.test([
+  r?.detail || '', ...(r?.questions || []), r?.meta?.head || '',
+].join(' '));
 // Login backoff: once a site needs login, stop hammering it — surface the banner and only
 // re-probe every few minutes. Returns true if we should SKIP acting on this site right now.
 const loginProbeAt = {};
@@ -102,18 +110,43 @@ const needsLogin = site => !!(state.loginNeeded && state.loginNeeded[site]); // 
 // ── queue selector (shared) ──────────────────────────────────────────────────
 function queue(channel, limit = 25) {
   const minPosted = new Date(Date.now() - MAX_AGE_DAYS[channel] * 86400e3).toISOString();
-  return rows(`SELECT * FROM jobs WHERE status='new' AND channel=? AND relevance>=? AND COALESCE(attempts,0)<3
+  const candidates = rows(`SELECT * FROM jobs WHERE status='new' AND channel=? AND relevance>=? AND COALESCE(attempts,0)<3
      AND (posted_at='' OR posted_at IS NULL OR posted_at>=?)
      ORDER BY ${channel === 'email' ? "CASE WHEN source='linkedin_post' THEN 0 ELSE 1 END," : ''}
        CASE WHEN posted_at='' OR posted_at IS NULL THEN 1 ELSE 0 END, posted_at DESC, relevance DESC LIMIT ?`,
-    [channel, MIN_REL[channel], minPosted, limit]);
+    [channel, MIN_REL[channel], minPosted, limit * 3]);
+  const p = getProfile();
+  return candidates.filter(j => {
+    if (isExcludedCompany(`${j.company || ''} ${j.role || ''} ${j.description || ''}`)) return false;
+    const cv = assessJob(j, p);
+    if (!cv.roleAligned) {
+      setFields(j.url, {
+        status: 'skipped',
+        notes: `CV relevance guard: ${cv.basis}`,
+        cv_match_percent: cv.matchPercent,
+        cv_drift_percent: cv.driftPercent,
+        cv_missing_terms: cv.missingTerms.join(', '),
+        tailor_status: 'not_requested',
+      });
+      return false;
+    }
+    return true;
+  }).slice(0, limit);
 }
 const capLeft = (k, type) => Math.max(0, DAILY[k] - doneToday(type));
+function jobCvAttachment(j, p) {
+  const attachment = cvAttachmentForJob(j, p);
+  if (attachment && attachment.includes(`${path.sep}tailored-cv${path.sep}`) && j.url) {
+    setFields(j.url, { tailor_status: 'generated', tailored_cv_path: attachment });
+  }
+  return attachment;
+}
 
 // ── ingest helper ────────────────────────────────────────────────────────────
 function ingest(leads) {
-  const good = leads.filter(l => !l.skip && !l.alreadyApplied);
-  const skip = leads.filter(l => l.skip && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped' }));
+  const excluded = l => isExcludedCompany(`${l.company || ''} ${l.role || ''} ${l.description || ''}`);
+  const good = leads.filter(l => !l.skip && !l.alreadyApplied && !excluded(l));
+  const skip = leads.filter(l => (l.skip || excluded(l)) && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped', skipWhy: l.skipWhy || 'company excluded by profile' }));
   const applied = leads.filter(l => l.alreadyApplied).map(l => ({ ...l, status: 'applied' }));
   const n = upsertJobs([...good, ...skip, ...applied]);
   for (const l of skip) { const j = getJob(l.url); if (j && j.status === 'skipped' && !j.notes) setFields(l.url, { notes: l.skipWhy }); }
@@ -187,9 +220,10 @@ async function mailer() {
     const job = { ...j, posterName: j.poster_name, description: j.description };
     const subj = mkSubject(job, p), body = mkBody(job, p);
     beat('mailer', `emailing ${j.email}`);
+    // Dry runs must be observational: do not consume attempts or mark a lead as sent.
+    if (DRY) { say('mailer', `DRY → ${j.email}`); await jitter(PACE.mailer); continue; }
     bumpAttempt(j.url);
-    if (DRY) { say('mailer', `DRY → ${j.email}`); setStatus(j.url, 'emailed', 'DRY'); await jitter(PACE.mailer); continue; }
-    const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: p.cvPath });
+    const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: jobCvAttachment(j, p) });
     if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
     else if (notLoggedIn(r.detail)) { flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do'); continue; }
     else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
@@ -225,12 +259,13 @@ async function applier() {
     }
     const j = list.find(j => chan !== 'form' || !learnedSkip('form_domain', domainOf(j.apply_url || j.url)));
     if (!j) { beat('applier', `idle (${chan} queue empty)${liCooling ? ' · LinkedIn cooling down' : ''}`); await SLEEP(12000); continue; }
+    // Dry runs must be observational: do not consume attempts or mark a lead applied.
+    if (DRY) { say('applier', `DRY ${chan} → ${j.role}`); await jitter(PACE.applier); continue; }
     bumpAttempt(j.url);
-    if (DRY) { say('applier', `DRY ${chan} → ${j.role}`); setStatus(j.url, 'applied', 'DRY'); await jitter(PACE.applier); continue; }
     try {
       if (doEasy) {
         beat('applier', `⚡ ${j.role} @ ${j.company}`);
-        const r = await easyApply({ url: j.apply_url || j.url });
+        const r = await easyApply({ url: j.apply_url || j.url, job: { ...j, role: j.role, company: j.company, description: j.description } });
         if (r.result === 'daily_limit') {
           // LinkedIn says "apply tomorrow" — stop Easy Apply for the rest of the day; forms keep going.
           liCooldownUntil = Date.now() + 14 * 3600000;
@@ -250,7 +285,10 @@ async function applier() {
         }
         if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; clearLogin('LinkedIn'); }
         else if (r.result === 'no_easy_apply') { if (r.externalUrl) setFields(j.url, { channel: 'form', apply_url: r.externalUrl }); else setStatus(j.url, 'skipped', 'no Easy Apply / external'); }
-        else if (r.result === 'needs_answers') setStatus(j.url, 'needs_manual', r.detail);
+        else if (r.result === 'needs_answers') {
+          if (requiresWorkAuthorization(r)) setStatus(j.url, 'skipped', 'skipped: work authorization/citizenship requirement');
+          else setStatus(j.url, 'needs_manual', r.detail);
+        }
         else if (r.result === 'closed') setStatus(j.url, 'skipped', 'closed');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
         // repeated misses in a row usually mean soft-throttling → 30-min cooldown (per your guidance)
@@ -260,9 +298,12 @@ async function applier() {
       } else {
         const target = j.apply_url || j.url;
         beat('applier', `📋 ${j.role} @ ${j.company}`);
-        const r = await applyForm({ url: target, submit: true });
+        const r = await applyForm({ url: target, submit: true, job: { ...j, role: j.role, company: j.company, description: j.description } });
         if (r.result === 'submitted') setStatus(j.url, 'applied', 'form submitted');
-        else if (r.result === 'needs_manual') setStatus(j.url, 'needs_manual', r.detail);
+        else if (r.result === 'needs_manual') {
+          if (requiresWorkAuthorization(r)) setStatus(j.url, 'skipped', 'skipped: work authorization/citizenship requirement');
+          else setStatus(j.url, 'needs_manual', r.detail);
+        }
         else if (r.result === 'no_form') setStatus(j.url, 'skipped', 'no form');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
         if (r.finalUrl) setFields(j.url, { apply_url: r.finalUrl });
@@ -285,8 +326,9 @@ async function connector() {
     if (needsLogin('LinkedIn')) { beat('connector', 'paused — waiting for you to log into LinkedIn'); await SLEEP(60000); continue; }
     const j = queue('connect', 15).find(j => j.poster_url && !alreadyConnected(j.poster_url) && !alreadyApplied(j.company, j.role));
     if (!j) { beat('connector', 'idle (queue empty)'); await SLEEP(45000); continue; }
+    // Dry runs must be observational: do not consume attempts or mark a lead connected.
+    if (DRY) { say('connector', `DRY → ${j.poster_name}`); await jitter(PACE.connector); continue; }
     bumpAttempt(j.url);
-    if (DRY) { say('connector', `DRY → ${j.poster_name}`); setStatus(j.url, 'connected', 'DRY'); await jitter(PACE.connector); continue; }
     beat('connector', `🔗 ${j.poster_name}`);
     const r = await connect({ profileUrl: j.poster_url, posterName: j.poster_name, role: j.role, company: j.company });
     if (/^connected/.test(r.result)) { setStatus(j.url, 'connected', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, r.note || '', 'connected'); clearLogin('LinkedIn'); }

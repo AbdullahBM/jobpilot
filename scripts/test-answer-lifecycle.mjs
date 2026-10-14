@@ -2,7 +2,9 @@ import { initDB, getDB, save } from '../src/tracker.js';
 import { initEvolve, askLater, answerByKey, learnedAnswer, pendingQuestions, qkey } from '../src/evolve.js';
 await initDB(); initEvolve();
 
-const uniq = 'ZTST' + Date.now();
+// Include multiple unique sentinels so the fuzzy matcher cannot confuse this
+// fixture with a real, previously learned Kubernetes/experience answer.
+const uniq = `ZTST${Date.now()} QuartzMango RiverPixel`;
 const Q = `How many years of ${uniq} Kubernetes experience do you have?`;
 const Qreword = `Years of ${uniq} Kubernetes experience?`;
 
@@ -11,14 +13,16 @@ const check = (name, cond) => { console.log((cond ? 'PASS' : 'FAIL') + ' - ' + n
 
 // 1. Unknown question gets parked
 askLater(Q, []);
-const parkedKey = pendingQuestions(200).find(a => a.question.includes(uniq))?.qkey;
+// The local DB can contain more than 200 historical pending questions. Use a
+// sufficiently wide read here so the test observes the row it just created.
+const parkedKey = pendingQuestions(10000).find(a => a.question.includes(uniq))?.qkey;
 check('question parked with a key', !!parkedKey);
 
 // 2. Simulate the DASHBOARD saving via the EXACT stored qkey (the bug path)
 answerByKey(parkedKey, '5 years', 'user');
 
 // 3. The parked question must now be GONE from pending (this was the bug)
-check('question cleared from pending after answer', !pendingQuestions(200).some(a => a.question.includes(uniq)));
+check('question cleared from pending after answer', !pendingQuestions(10000).some(a => a.question.includes(uniq)));
 
 // 4. The answer is reused for the SAME question
 check('answer reused (exact)', learnedAnswer(Q) === '5 years');
@@ -28,7 +32,7 @@ check('answer reused (reworded)', learnedAnswer(Qreword) === '5 years');
 
 // 6. askLater on the reworded version must NOT re-park it
 askLater(Qreword, []);
-check('reworded question not re-parked', !pendingQuestions(200).some(a => a.question.includes(uniq)));
+check('reworded question not re-parked', !pendingQuestions(10000).some(a => a.question.includes(uniq)));
 
 // 7. qkey is deterministic
 check('qkey deterministic', qkey(Q) === qkey(Q));

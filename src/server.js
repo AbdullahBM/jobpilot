@@ -114,6 +114,12 @@ const server = http.createServer(async (req, res) => {
       const saved = updateProfile({ consent: { autoContribute: !!body.autoContribute } });
       return json(res, 200, { ok: true, consent: saved.consent });
     }
+    // ── POST /api/tailored-cv-consent → explicit approval gate ────────────────
+    if (req.method === 'POST' && url.pathname === '/api/tailored-cv-consent') {
+      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      const saved = updateProfile({ preferences: { allowTailoredCv: body.allowTailoredCv === true } });
+      return json(res, 200, { ok: true, allowTailoredCv: saved.preferences.allowTailoredCv });
+    }
 
     // ── GET /api/answers → open questions + learned answers ───────────────────
     if (req.method === 'GET' && url.pathname === '/api/answers') {
@@ -158,6 +164,11 @@ const server = http.createServer(async (req, res) => {
 function onboardingHtml() {
   const p = getProfile();
   const L = p.links || {};
+  const currentSalary = p.currentSalary || {};
+  const salaryExpectationText = (p.salaryExpectations || []).map(x => {
+    const range = x.min === x.max || !x.max ? x.min : `${x.min}-${x.max}`;
+    return `${x.country || 'Worldwide'} = ${x.currency || ''} ${range} / ${x.period || 'month'}`.trim();
+  }).join('\n');
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <title>Job Agent — Setup</title>
 <style>
@@ -205,6 +216,8 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
     <div><label>Headline / current title</label><input type="text" id="headline" value="${p.headline || p.currentTitle || ''}" placeholder="Senior Software Engineer"></div>
     <div><label>Years of experience</label><input type="text" id="years" value="${p.yearsExperience || ''}" placeholder="5"></div>
   </div>
+  <label>Current employer (optional — automatically excluded from applications)</label>
+  <input type="text" id="currentCompany" value="${p.currentCompany || ''}" placeholder="e.g. Smart Working Solutions">
 </div>
 
 <div class="card">
@@ -227,6 +240,9 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
   <input type="text" id="skills" value="${(p.skills || []).join(', ')}" placeholder="Python, FastAPI, AWS, LLM, RAG">
   <label>Skip (comma-separated)</label>
   <input type="text" id="skip" value="${(p.preferences?.skip || []).join(', ')}" placeholder="junior, intern, sales">
+  <label>Employers/companies to avoid (optional, comma-separated)</label>
+  <input type="text" id="avoidCompanies" value="${(p.preferences?.avoidCompanies || []).join(', ')}" placeholder="e.g. former employers, clients, specific companies">
+  <div class="sub" style="margin:8px 0 0">The current employer above is always excluded too. This protects you from accidentally applying where you already work.</div>
   <label>Location scope — how far should the agent search?</label>
   <select id="locationScope" style="width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#e2e8f0;font-size:13px">
     <option value="worldwide" ${(p.preferences?.locationScope||'worldwide')==='worldwide'?'selected':''}>🌍 Worldwide — apply to jobs anywhere</option>
@@ -239,12 +255,28 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
 </div>
 
 <div class="card">
+  <h2>📄 CV tailoring approval</h2>
+  <label style="display:flex;gap:8px;align-items:flex-start;color:#e2e8f0">
+    <input type="checkbox" id="allowTailoredCv" ${p.preferences?.allowTailoredCv === true ? 'checked' : ''}>
+    Allow JobPilot to generate and upload a job-specific CV draft for slightly related target roles.
+  </label>
+  <div class="sub" style="margin:8px 0 0">This is optional and starts OFF. The uploaded draft may only reorder facts from the main CV/profile. JobPilot records match and drift percentages and will never use a tailored draft for a role outside your configured CV target roles.</div>
+</div>
+
+<div class="card">
   <h2>💰 The things the agent should never guess</h2>
   <div class="sub" style="margin:-6px 0 10px">So it can answer screening questions without pausing to ask you.</div>
   <div class="row">
-    <div><label>Expected salary — amount</label><input type="text" id="salAmount" value="${p.salary?.amount || ''}" placeholder="500000"></div>
-    <div><label>Currency / period</label><input type="text" id="salCur" value="${(p.salary?.currency || '') + (p.salary?.period ? ' / ' + p.salary.period : '')}" placeholder="PKR / month"></div>
+    <div><label>Current salary — amount</label><input type="text" id="currentSalAmount" value="${currentSalary.amount || ''}" placeholder="500000"></div>
+    <div><label>Current currency / period</label><input type="text" id="currentSalCur" value="${(currentSalary.currency || '') + (currentSalary.period ? ' / ' + currentSalary.period : '')}" placeholder="PKR / month"></div>
   </div>
+  <div class="row">
+    <div><label>Default expected salary — amount</label><input type="text" id="salAmount" value="${p.salary?.amount || ''}" placeholder="600000"></div>
+    <div><label>Default currency / period</label><input type="text" id="salCur" value="${(p.salary?.currency || '') + (p.salary?.period ? ' / ' + p.salary.period : '')}" placeholder="PKR / month"></div>
+  </div>
+  <label>Country-specific expectations (one per line)</label>
+  <textarea id="salaryExpectations" rows="3" placeholder="Pakistan = PKR 600000-800000 / month&#10;Worldwide = USD 5000 / month">${salaryExpectationText}</textarea>
+  <div class="sub" style="margin:8px 0 0">The agent selects the matching country/currency; if a form only accepts one number, it uses the lower end of the range.</div>
   <div class="row">
     <div><label>Need visa sponsorship?</label><input type="text" id="sponsor" value="${p.workAuth?.needsSponsorship === true ? 'yes' : p.workAuth?.needsSponsorship === false ? 'no' : ''}" placeholder="no"></div>
     <div><label>Authorized to work in</label><input type="text" id="authIn" value="${(p.workAuth?.authorizedIn || []).join(', ')}" placeholder="Pakistan"></div>
@@ -289,18 +321,35 @@ $('save').onclick = async () => {
   const answers = {};
   $('answers').value.split('\\n').forEach(line => { const i = line.indexOf('='); if (i > 0) answers[line.slice(0, i).trim()] = line.slice(i + 1).trim(); });
   if ($('notice').value.trim()) answers['notice period'] = $('notice').value.trim();
+  const parseMoney = raw => {
+    const m = raw.trim().match(/^([A-Za-z]{3})?\s*([\d,]+)(?:\s*(?:-|–|to)\s*([\d,]+))?\s*(?:\/\s*(month|year|hour))?$/i);
+    if (!m) return null;
+    const min = parseInt(m[2].replace(/,/g, ''), 10);
+    const max = parseInt((m[3] || m[2]).replace(/,/g, ''), 10);
+    return { currency: (m[1] || '').toUpperCase(), min, max, period: (m[4] || 'month').toLowerCase() };
+  };
+  const salaryExpectations = $('salaryExpectations').value.split('\\n').map(line => {
+    const i = line.indexOf('=');
+    if (i <= 0) return null;
+    const money = parseMoney(line.slice(i + 1));
+    return money ? { country: line.slice(0, i).trim(), ...money } : null;
+  }).filter(Boolean);
+  const currentSalCur = $('currentSalCur').value.split('/').map(x => x.trim());
   const salCur = $('salCur').value.split('/').map(x => x.trim());
   const sponsorVal = $('sponsor').value.trim().toLowerCase();
   const patch = {
     name: $('name').value, email: $('email').value, phone: $('phone').value, location: $('location').value,
     headline: $('headline').value, currentTitle: $('headline').value,
+    currentCompany: $('currentCompany').value,
     yearsExperience: parseInt($('years').value) || 0,
     skills: parseList($('skills').value),
     extra: $('extra').value,
     salary: { amount: parseInt($('salAmount').value) || 0, currency: (salCur[0] || '').toUpperCase(), period: salCur[1] || 'month' },
+    currentSalary: { amount: parseInt($('currentSalAmount').value) || 0, currency: (currentSalCur[0] || '').toUpperCase(), period: currentSalCur[1] || 'month' },
+    salaryExpectations,
     workAuth: { needsSponsorship: sponsorVal === 'yes' ? true : sponsorVal === 'no' ? false : undefined, authorizedIn: parseList($('authIn').value) },
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
-    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), locationScope: $('locationScope').value },
+    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value, allowTailoredCv: $('allowTailoredCv').checked },
     loggedInSources: parseList($('sources').value),
     answers,
   };

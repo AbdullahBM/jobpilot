@@ -48,6 +48,7 @@ export function renderQuestionsTab(pend, agentAnswered, recommend) {
     <td>
       <span class="em">${esc(a.answer)}</span>
       &nbsp;${agentBadge()}
+      <div class="dim" style="margin-top:3px">confidence ${a.confidence == null ? '—' : `${a.confidence}%`} · match ${a.match_percent == null ? '—' : `${a.match_percent}%`} · ${esc(a.confidence_basis || a.options || 'profile')}</div>
       &nbsp;<button class="opt" style="font-size:11px;padding:2px 8px" onclick="overrideAns('${esc(a.qkey)}','${esc(a.answer)}')">override</button>
     </td>
   </tr>`).join('');
@@ -60,7 +61,7 @@ export function renderQuestionsTab(pend, agentAnswered, recommend) {
   const agentTable = agentAnswered.length
     ? `<h2 style="margin-top:18px">🤖 Auto-answered by agent (${agentAnswered.length}) — review &amp; override if needed</h2>
        <p class="dim" style="margin-bottom:8px">These were derived from your profile. The agent used them already — click override to correct any.</p>
-       ${table('agent_answered', ['Question', 'Agent\'s answer'], agentRows, '')}`
+       ${table('agent_answered', ['Question', 'Agent\'s answer / confidence'], agentRows, '')}`
     : '';
 
   return `
@@ -73,9 +74,10 @@ ${agentTable}`.trim();
  * Render the Evolution tab content: open encounters + learned answers table.
  * @param {object[]} enc - open encounter rows
  * @param {object[]} learned - learned answer rows (pending=0)
+ * @param {object[]} audits - anonymized GitHub self-audit ledger rows
  * @returns {string} HTML
  */
-export function renderEvolutionTab(enc, learned) {
+export function renderEvolutionTab(enc, learned, audits = []) {
   const encRows = enc.map(e => `<tr>
     <td class="dim">#${e.id}</td>
     <td><b>${esc(e.area)}</b></td>
@@ -95,9 +97,21 @@ export function renderEvolutionTab(enc, learned) {
     <td class="dim">${a.uses}×</td>
   </tr>`).join('');
 
+  const auditRows = audits.map(a => `<tr>
+    <td><b>${esc(a.kind)}</b></td>
+    <td><code>${esc(a.fingerprint)}</code></td>
+    <td>${esc(a.status)}</td>
+    <td>${a.occurrences || 1}</td>
+    <td>${a.issue_url ? `<a href="${esc(a.issue_url)}" target="_blank">issue ↗</a>` : '<span class="dim">pending sync</span>'}</td>
+    <td>${a.pr_url ? `<a href="${esc(a.pr_url)}" target="_blank">PR ↗</a>` : '<span class="dim">—</span>'}</td>
+  </tr>`).join('');
+
   return `
 <p class="dim" style="margin-bottom:8px">Every failure the agent hit, grouped and counted, with a saved screenshot + HTML snapshot. Your coding agent reads <code>data/evolution/PLAYBOOK.md</code>, patches the code, and marks them fixed.</p>
 ${table('enc', ['#', 'Area', 'Count', 'Domain', 'Signature', 'Evidence', 'Sample'], encRows, 'No open encounters 🎉')}
+<h2 style="margin-top:16px">GitHub self-audit ledger (${audits.length})</h2>
+<p class="dim" style="margin-bottom:8px">Every anonymized learning/improvement fingerprint is mirrored to a separate <code>self-audit</code> issue. Resolved audits are closed; code-related audits link their PR.</p>
+${table('audits', ['Type', 'Fingerprint', 'Status', 'Occurrences', 'Issue', 'PR'], auditRows, 'No audit events recorded yet')}
 <h2 style="margin-top:16px">Learned answers (${learned.length})</h2>
 ${table('learn', ['Question', 'Answer', 'Source', 'Uses'], learnRows, 'Nothing learned yet')}`.trim();
 }

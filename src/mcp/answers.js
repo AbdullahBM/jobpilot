@@ -23,6 +23,45 @@ function ans(p, key, dflt = '') {
 /** Approximate USD exchange rates for salary conversion. */
 const FX = { usd: 1, eur: 0.92, gbp: 0.79, pkr: 280, inr: 84, aed: 3.67, cad: 1.37 };
 
+const CURRENT_SALARY_RE = /\b(current|present|existing|currently\s+(earn|make)|current\s+(pay|salary|compensation))\b/;
+
+function requestedCurrency(q, fallback = 'usd') {
+  return Object.keys(FX).find(c => q.includes(c))
+    || (/\$|dollar/.test(q) ? 'usd' : /€/.test(q) ? 'eur' : /£/.test(q) ? 'gbp'
+      : /rupee|\brs\b/.test(q) ? (fallback === 'inr' ? 'inr' : 'pkr') : fallback);
+}
+
+function requestedPeriod(q, fallback = 'month') {
+  return /annual|yearly|per year|per annum|\/yr|\blpa\b|\bctc\b/.test(q) ? 'year'
+    : /hour|hourly|\/hr/.test(q) ? 'hour' : fallback;
+}
+
+function salaryExpectation(p, q) {
+  const entries = Array.isArray(p.salaryExpectations)
+    ? p.salaryExpectations.filter(x => x && (+x.min || +x.max)) : [];
+  const legacy = p.salary || {};
+  const current = p.currentSalary || {};
+  if (CURRENT_SALARY_RE.test(q)) return current.amount ? current : null;
+  if (!entries.length) return legacy.amount ? { ...legacy, min: legacy.amount, max: legacy.amount } : null;
+
+  const qCurrency = requestedCurrency(q, '');
+  const explicitCountry = entries.find(x => x.country && q.includes(String(x.country).toLowerCase()));
+  const currencyMatch = qCurrency && entries.find(x => String(x.currency || '').toLowerCase() === qCurrency);
+  const broad = entries.find(x => /world|global|anywhere|default/i.test(String(x.country || '')));
+  const selected = explicitCountry || currencyMatch || broad || entries[0];
+  return {
+    ...selected,
+    min: +selected.min || +selected.max || 0,
+    max: +selected.max || +selected.min || 0,
+  };
+}
+
+function formatSalaryValue(value, currency, period) {
+  return currency === 'pkr' || currency === 'inr'
+    ? Math.round(value / 1000) * 1000
+    : period === 'hour' ? Math.round(value) : Math.round(value / 100) * 100;
+}
+
 /**
  * Convert profile.salary to the currency/period implied by the question.
  * @param {string} q   - lowercased question text
@@ -30,26 +69,24 @@ const FX = { usd: 1, eur: 0.92, gbp: 0.79, pkr: 280, inr: 84, aed: 3.67, cad: 1.
  * @param {boolean} numeric - true = return only the number string
  * @returns {string|null}
  */
-function salaryFor(q, p, numeric) {
-  const s = p.salary || {};
-  const base    = +s.amount || +ans(p, 'salary pkr monthly', 0) || 0;
-  const baseCur = (s.currency || (ans(p, 'salary pkr monthly') ? 'pkr' : 'usd')).toLowerCase();
+export function salaryFor(q, p, numeric = false) {
+  q = String(q || '').toLowerCase();
+  const s = salaryExpectation(p, q);
+  if (!s) {
+    const fallback = CURRENT_SALARY_RE.test(q) ? ans(p, 'current salary', null) : ans(p, 'salary', null);
+    return fallback || (numeric ? null : 'Negotiable');
+  }
+  const baseCur = String(s.currency || 'usd').toLowerCase();
+  const cur = requestedCurrency(q, baseCur);
+  const period = requestedPeriod(q, s.period || 'month');
   const basePeriod = s.period || 'month';
-  if (!base) return ans(p, 'salary', null) || (numeric ? null : 'Negotiable');
-
-  const cur = Object.keys(FX).find(c => q.includes(c))
-    || (/\$|dollar/.test(q) ? 'usd' : /€/.test(q) ? 'eur' : /£/.test(q) ? 'gbp'
-      : /rupee|\brs\b/.test(q) ? (baseCur === 'inr' ? 'inr' : 'pkr') : baseCur);
-  const period = /annual|yearly|per year|per annum|\/yr|\blpa\b|\bctc\b/.test(q) ? 'year'
-    : /hour|hourly|\/hr/.test(q) ? 'hour' : 'month';
-
-  let monthly = basePeriod === 'year' ? base / 12 : basePeriod === 'hour' ? base * 160 : base;
-  monthly = monthly / FX[baseCur] * FX[cur];
-  const v = period === 'year' ? monthly * 12 : period === 'hour' ? monthly / 160 : monthly;
-  const r = cur === 'pkr' || cur === 'inr'
-    ? Math.round(v / 1000) * 1000
-    : period === 'hour' ? Math.round(v) : Math.round(v / 100) * 100;
-  return String(r);
+  const toMonthly = value => basePeriod === 'year' ? value / 12 : basePeriod === 'hour' ? value * 160 : value;
+  const fromMonthly = value => period === 'year' ? value * 12 : period === 'hour' ? value / 160 : value;
+  const convert = value => formatSalaryValue(fromMonthly(toMonthly(value) / (FX[baseCur] || 1) * (FX[cur] || 1)), cur, period);
+  const min = convert(+s.min || +s.amount || 0);
+  const max = convert(+s.max || +s.min || +s.amount || 0);
+  // Numeric form controls cannot represent a range; use the lower bound.
+  return numeric ? String(min) : min === max ? String(min) : `${min}-${max}`;
 }
 
 /**
