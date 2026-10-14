@@ -387,7 +387,31 @@ async function fillPage(page, dlg, ctx, job = {}) {
     }
     if (anyChecked) ctx.used.push(question);
     else if (g[0].required && !isOptionalConsent(question)) { ctx.unanswered.add(question); askLater(question, labels.filter(Boolean)); }
+    await new Promise(r => setTimeout(r, 250)); // let the re-render settle before the next group
   }
+
+  // FINAL TEXT RE-FILL PASS. Checking radios/checkboxes triggers React re-renders that can WIPE
+  // text/textarea/select values entered earlier in this same page. Re-scan now (after all the
+  // choice widgets are set) and re-fill any required text field that came back empty.
+  try {
+    const after = await dlg.evaluate(SCAN);
+    for (const f of after.fields) {
+      if (f.type === 'radio' || f.type === 'checkbox' || f.type === 'file' || f.type === 'hidden') continue;
+      if (f.val && String(f.val).trim() && !/select an option/i.test(f.val)) continue; // still filled
+      if (!f.required) continue;
+      const loc = page.locator(`[data-ja="${f.id}"]`);
+      const isSalary = /salary|compensation|\bctc\b|were you making|desired (pay|salary)|current (pay|salary)/i.test(f.q);
+      const numeric = f.numeric || isSalary || /how many|years|number of/i.test(f.q);
+      const agentV = agentAnswerFor(ctx, f.q);
+      let v = agentV !== undefined ? (Array.isArray(agentV) ? agentV.join(', ') : String(agentV)) : textAnswer(f.q, { numeric });
+      if ((v == null || v === '') && /which country.*(reside|live|based)|country of residence/i.test(f.q)) v = p.country || 'Pakistan';
+      if (isSalary && (v == null || isNaN(parseFloat(String(v).replace(/[,\s]/g, ''))))) { const s = salaryFor(/\busd\b|\$/i.test(f.q) ? f.q + ' usd' : f.q, p, true); if (s != null) v = String(s).replace(/[^\d]/g, ''); }
+      if (v == null || v === '') continue;
+      if (f.tag === 'SELECT') { const opts = (f.opts || []).slice(1); const a = String(v).toLowerCase(); const pick = opts.find(o => o.toLowerCase() === a) || opts.find(o => o.toLowerCase().includes(a) || a.includes(o.toLowerCase())); if (pick) await loc.selectOption({ label: pick }).catch(() => {}); continue; }
+      let fillVal = String(v); if (f.maxlength && fillVal.length > f.maxlength) fillVal = f.maxlength <= 10 ? (/\byes\b/i.test(fillVal) ? 'Yes' : fillVal.slice(0, f.maxlength)) : fillVal.slice(0, f.maxlength);
+      await loc.fill(fillVal).catch(() => {});
+    }
+  } catch {}
 }
 
 // ── REASONING / ANALYSIS STEP ─────────────────────────────────────────────────
