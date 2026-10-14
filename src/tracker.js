@@ -11,7 +11,20 @@ fs.mkdirSync(DATA, { recursive: true });
 const require = createRequire(import.meta.url);
 
 let db = null;
+let SQLNS = null;
 let _initP = null;
+
+const ANSWER_FIELDS = ['qkey', 'question', 'answer', 'source', 'uses', 'wins', 'pending', 'seen', 'options', 'updated_at', 'confidence', 'match_percent', 'confidence_basis'];
+
+/** Disk row replaces memory when it was saved later, or it clears a still-pending question. */
+export function newerAnswerWins(memory, disk) {
+  if (!disk?.qkey) return false;
+  if (!memory) return true;
+  const dt = String(disk.updated_at || '');
+  const mt = String(memory.updated_at || '');
+  if (dt > mt) return true;
+  return dt === mt && Number(memory.pending) === 1 && Number(disk.pending) === 0 && String(disk.answer || '') !== '';
+}
 
 // Statuses that mean "we already reached out — never act again".
 export const DONE_STATUSES = ['emailed', 'applied', 'connected', 'dm_sent', 'skipped_duplicate'];
@@ -45,8 +58,9 @@ export async function initDB() {
   if (db) return db;
   if (_initP) return _initP;
   _initP = (async () => {
-    const SQL = await require('sql.js')();
-    db = fs.existsSync(DB_FILE) ? new SQL.Database(fs.readFileSync(DB_FILE)) : new SQL.Database();
+    SQLNS = await require('sql.js')();
+    db = fs.existsSync(DB_FILE) ? new SQLNS.Database(fs.readFileSync(DB_FILE)) : new SQLNS.Database();
+    try { _lastSaveMs = fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).mtimeMs : Date.now(); } catch { _lastSaveMs = Date.now(); }
     db.run(`
       CREATE TABLE IF NOT EXISTS jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, added_at TEXT DEFAULT (datetime('now')),
@@ -107,7 +121,42 @@ export async function initDB() {
 
 export function getDB() { if (!db) throw new Error('initDB() not called'); return db; }
 let _lastSaveMs = 0;
-export function save() { fs.writeFileSync(DB_FILE, Buffer.from(db.export())); _lastSaveMs = Date.now(); }
+
+function readRows(database, sql, p = []) {
+  const s = database.prepare(sql); s.bind(p);
+  const out = []; while (s.step()) out.push(s.getAsObject()); s.free();
+  return out;
+}
+
+// The dashboard and the worker each hold a full copy of jobs.db. A later save used to
+// export the stale copy and wipe an answer the user had just typed. Pull newer answer
+// rows off disk before writing so a question update sticks.
+function absorbNewerAnswers() {
+  if (!SQLNS || !db || !fs.existsSync(DB_FILE)) return;
+  let mtime = 0;
+  try { mtime = fs.statSync(DB_FILE).mtimeMs; } catch { return; }
+  if (!(mtime > _lastSaveMs + 50)) return;
+  let disk = null;
+  try {
+    disk = new SQLNS.Database(fs.readFileSync(DB_FILE));
+    const mem = new Map(readRows(db, 'SELECT * FROM answers').map(r => [r.qkey, r]));
+    for (const row of readRows(disk, 'SELECT * FROM answers')) {
+      if (!newerAnswerWins(mem.get(row.qkey), row)) continue;
+      const vals = ANSWER_FIELDS.map(f => row[f] ?? null);
+      db.run(
+        `INSERT INTO answers (${ANSWER_FIELDS.join(',')}) VALUES (${ANSWER_FIELDS.map(() => '?').join(',')})
+         ON CONFLICT(qkey) DO UPDATE SET ${ANSWER_FIELDS.filter(f => f !== 'qkey').map(f => `${f}=excluded.${f}`).join(', ')}`,
+        vals);
+    }
+  } catch { /* disk copy unreadable — keep this process's answers */ }
+  finally { try { disk?.close(); } catch {} }
+}
+
+export function save() {
+  absorbNewerAnswers();
+  fs.writeFileSync(DB_FILE, Buffer.from(db.export()));
+  _lastSaveMs = Date.now();
+}
 /** Another process (the worker) may have written the DB file — reload it read-side. */
 export async function reloadIfChanged() {
   if (!db) return initDB();
@@ -121,11 +170,7 @@ export async function reloadIfChanged() {
   } catch {}
   return db;
 }
-export function rows(sql, p = []) {
-  const s = db.prepare(sql); s.bind(p);
-  const out = []; while (s.step()) out.push(s.getAsObject()); s.free();
-  return out;
-}
+export function rows(sql, p = []) { return readRows(db, sql, p); }
 export function one(sql, p = []) { return rows(sql, p)[0] ?? null; }
 const nowIso = () => new Date().toISOString();
 
