@@ -50,15 +50,22 @@ const GEO_LOCK = /\b(us|u\.s\.|usa|united states|uk|eu|europe|canada|india|brazi
 export function score(text = '', title = '') {
   const p = getProfile();
   const t = text.toLowerCase();
-  const head = (title || text.slice(0, 220)).toLowerCase();
   const excluded = excludedCompanyMatch(text, p);
-  const skipHit = (p.preferences?.skip || []).find(s => new RegExp(`\\b${s}`, 'i').test(head));
+  // CRITICAL: skip-term and off-stack checks must ONLY fire on the job TITLE, never the
+  // description. "Backend Engineer" was being skipped because the post body mentioned
+  // "sales team" or "QA process" in an unrelated context.
+  const titleOnly = (title || '').toLowerCase().trim();
+  const head = titleOnly || text.slice(0, 100).split('\n')[0].toLowerCase(); // first line as fallback
+  const skipHit = titleOnly
+    ? (p.preferences?.skip || []).find(s => new RegExp(`\\b${s}\\b`, 'i').test(titleOnly))
+    : null; // no clean title → never skip based on description content
   const terms = new Set([...(p.skills || []), ...(p.preferences?.keywords || [])].map(s => s.toLowerCase()));
   const core = CV_TITLE.test(head) && !NON_CV_TITLE.test(head);
   const offStack = OFF_STACK.test(head) && !/\b(python|ai|ml|llm|fastapi|django)\b/.test(head);
   let hit = 0; for (const s of terms) if (t.includes(s)) hit++;
   const rel = Math.min(1, (core ? 0.45 : 0) + 0.55 * Math.min(1, hit / 6));
-  const tooJunior = /\b(freshers?|0\s*[-–]\s*[12]\s*(years|yrs)|entry[- ]level|internship|interns?\b|trainee|graduate program)\b/.test(t.slice(0, 700));
+  // Junior check: title + first 120 chars of body only — not the full description.
+  const tooJunior = /\b(freshers?|0\s*[-–]\s*[12]\s*(years|yrs)|entry[- ]level|internship|interns?\b|trainee|graduate program)\b/.test(titleOnly + ' ' + t.slice(0, 120));
   const equityOnly = /\b(co-?founder|cofondat|equity[- ]only|unpaid|sweat equity|no salary)\b/.test(t.slice(0, 700));
   const geo = GEO_LOCK.test(text.slice(0, 2500));
   const why = excluded ? `excluded company "${excluded}"` : skipHit ? `skip term "${skipHit}"` : !core ? 'title not aligned with CV target roles' : offStack ? 'off-stack title' : tooJunior ? 'junior/fresher' : equityOnly ? 'co-founder / equity-only' : geo ? 'location-restricted / authorization' : '';
@@ -265,5 +272,58 @@ export async function publicBoards({ maxAgeHours = 72 } = {}) {
   for (const x of hm?.jobs || []) push('himalayas', x.title, x.companyName, x.applicationLink || x.guid, strip(x.description || x.excerpt), (x.pubDate || 0) * 1000);
   const seen = new Set();
   const uniq = leads.filter(l => !seen.has(l.url) && seen.add(l.url));
-  return { ok: true, leads: uniq, detail: `${uniq.length} fresh board jobs (${uniq.filter(l => l.email).length} email)` };
+
+  // ── Pakistani job boards ──────────────────────────────────────────────────
+  // Helper to fetch XML/text (not JSON)
+  const getText = async u => { try { const r = await fetch(u, { headers: { 'User-Agent': UA }, timeout: 20000 }); return r.ok ? r.text() : null; } catch { return null; } };
+  const parseRssItems = xml => (String(xml || '')).match(/<item>[\s\S]*?<\/item>/g) || [];
+  const rssField = (item, tag) => (item.match(new RegExp(`<${tag}><\\!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([^<]*)<\\/${tag}>`)) || []).slice(1).find(Boolean) || '';
+
+  // Rozee.pk RSS — largest Pakistani job board
+  for (const kw of ['AI Engineer', 'Machine Learning', 'Python Developer', 'Backend Developer', 'LLM', 'FastAPI']) {
+    try {
+      const xml = await getText(`https://www.rozee.pk/job/rss/q/${encodeURIComponent(kw)}`);
+      for (const item of parseRssItems(xml).slice(0, 15)) {
+        const title = rssField(item, 'title');
+        const link = rssField(item, 'link') || rssField(item, 'guid');
+        const desc = strip(rssField(item, 'description'));
+        const pubDate = rssField(item, 'pubDate');
+        const company = rssField(item, 'rozee:company') || rssField(item, 'author') || '';
+        if (title && link) push('rozee.pk', title, company, link, desc, pubDate ? Date.parse(pubDate) : Date.now() - 12 * 3600e3, link);
+      }
+    } catch { /* skip */ }
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  // Mustakbil.com RSS — second-largest Pakistani board
+  for (const kw of ['AI Engineer', 'Python Developer', 'Backend Developer']) {
+    try {
+      const xml = await getText(`https://mustakbil.com/jobs/rss/?q=${encodeURIComponent(kw)}&l=Pakistan`);
+      for (const item of parseRssItems(xml).slice(0, 12)) {
+        const title = rssField(item, 'title');
+        const link = rssField(item, 'link') || rssField(item, 'guid');
+        const desc = strip(rssField(item, 'description'));
+        const pubDate = rssField(item, 'pubDate');
+        if (title && link) push('mustakbil', title, '', link, desc, pubDate ? Date.parse(pubDate) : Date.now() - 12 * 3600e3, link);
+      }
+    } catch { /* skip */ }
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  // Jobs.com.pk / Paperpk RSS (Pakistani job aggregators)
+  try {
+    const xml = await getText('https://www.paperpk.com/rss/category/technology-jobs/');
+    for (const item of parseRssItems(xml).slice(0, 20)) {
+      const title = rssField(item, 'title');
+      const link = rssField(item, 'link') || rssField(item, 'guid');
+      const desc = strip(rssField(item, 'description'));
+      const pubDate = rssField(item, 'pubDate');
+      if (title && link && /python|ai|ml|backend|machine learning|llm|fastapi|software engineer/i.test(title + ' ' + desc))
+        push('paperpk', title, '', link, desc, pubDate ? Date.parse(pubDate) : Date.now() - 24 * 3600e3, link);
+    }
+  } catch { /* skip */ }
+
+  const seen2 = new Set();
+  const all = [...uniq, ...leads.slice(uniq.length)].filter(l => !seen2.has(l.url) && seen2.add(l.url));
+  return { ok: true, leads: all, detail: `${all.length} fresh board jobs (${all.filter(l => l.email).length} email)` };
 }

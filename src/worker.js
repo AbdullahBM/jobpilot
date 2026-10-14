@@ -143,17 +143,35 @@ function jobCvAttachment(j, p) {
 }
 
 // Country scope is an action gate, not just a search hint: old/global queue entries and
-// broad public-board results must never leak into outreach or applications.
+// Pakistan-only action gate — applied at queue time so non-Pakistan jobs never reach outreach.
+const PK_CITIES = /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/i;
+const GEO_LOCK_ACTION = /\b(us|u\.s\.|usa|united states|uk|u\.k\.|united kingdom|eu|europe|european union|canada|india|brazil|latam|germany|australia|singapore|hong kong)[- ]?(only|based only|residents? only|citizens? only|timezone|tz)\b|\bmust (be|reside|live|work) (located |based )?in (the )?(us|usa|uk|eu|canada|india|europe)\b|\bus citizen|security clearance|\bh1b\b|\bno[- ]?sponsorship\b/i;
+
 function locationAllowed(job) {
   const profile = getProfile();
   if (profile.preferences?.locationScope !== 'country') return true;
-  const country = String(profile.country || '').trim().toLowerCase();
-  const location = String(job.location || '').trim().toLowerCase();
-  if (!country || !location) return false; // conservative: unknown location is not in scope
-  if (location.includes(country)) return true;
-  // LinkedIn and boards often abbreviate a Pakistan location to its city.
-  if (country === 'pakistan') return /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/.test(location);
-  return false;
+
+  const location = String(job.location || '').toLowerCase();
+  const source   = String(job.source   || '').toLowerCase();
+  const desc     = String(job.description || '').slice(0, 600).toLowerCase();
+
+  // 1. Pakistani board sources — always in scope
+  if (/rozee|mustakbil/.test(source)) return true;
+
+  // 2. Explicit Pakistan location
+  if (location.includes('pakistan') || PK_CITIES.test(location)) return true;
+
+  // 3. LinkedIn posts/easy — must have a Pakistan signal in location OR description.
+  //    A blank location with no Pakistan mention could be a global post → reject it.
+  if (/^linkedin/.test(source)) {
+    if (location) return location.includes('pakistan') || PK_CITIES.test(location);
+    // blank location: only allow if the post text explicitly mentions Pakistan and is not geo-locked elsewhere
+    if (GEO_LOCK_ACTION.test(desc)) return false;
+    return /pakistan|karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|remote.{0,20}pakistan/.test(desc);
+  }
+
+  // 4. Everything else must explicitly mention Pakistan (location or description)
+  return /pakistan|karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar/.test(desc);
 }
 
 // ── ingest helper ────────────────────────────────────────────────────────────
