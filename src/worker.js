@@ -254,7 +254,15 @@ async function applier() {
     const capK = doEasy ? 'easy' : 'form', capType = doEasy ? 'li_easy_apply' : 'portal_apply';
     if (capLeft(capK, capType) <= 0) { await SLEEP(60000); continue; }
     const list = queue(chan, 15).filter(j => !alreadyApplied(j.company, j.role));
-    const j = list.find(j => !learnedSkip('form_domain', domainOf(j.apply_url || j.url)));
+    // A learned form-domain skip must not leave a relevant lead silently stuck
+    // as `new`; surface it for manual review and only apply the learned skip to
+    // the form lane (never to Easy Apply).
+    if (chan === 'form') {
+      for (const blocked of list.filter(j => learnedSkip('form_domain', domainOf(j.apply_url || j.url)))) {
+        setStatus(blocked.url, 'needs_manual', `manual review: repeated form failures on ${domainOf(blocked.apply_url || blocked.url)}`);
+      }
+    }
+    const j = list.find(j => chan !== 'form' || !learnedSkip('form_domain', domainOf(j.apply_url || j.url)));
     if (!j) { beat('applier', `idle (${chan} queue empty)${liCooling ? ' · LinkedIn cooling down' : ''}`); await SLEEP(12000); continue; }
     // Dry runs must be observational: do not consume attempts or mark a lead applied.
     if (DRY) { say('applier', `DRY ${chan} → ${j.role}`); await jitter(PACE.applier); continue; }
