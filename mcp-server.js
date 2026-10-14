@@ -308,7 +308,11 @@ const TOOLS = [
       if (email && alreadyEmailed(email)) return ok({ action: 'skip', reason: 'already_emailed', detail: email });
       if (alreadyApplied(company || '', role || '')) return ok({ action: 'skip', reason: 'already_applied', detail: `${company} ${role}` });
 
-      if (apply_method === 'email' && email) {
+      // Prefer the email channel whenever a usable, not-already-emailed address is present — email
+      // is the highest-priority outreach channel and must not lose out to an easy_apply/form hint.
+      const method = (email && !alreadyEmailed(email)) ? 'email' : apply_method;
+
+      if (method === 'email' && email) {
         const subj = buildSubject({ company, role }, profile);
         const text = buildBody({ company, role }, profile);
         const r = await timed('send_email', email, { email }, profile.limits.maxAttemptsPerJob, async () => {
@@ -318,19 +322,19 @@ const TOOLS = [
         });
         return ok({ action: 'email', to: email, result: r });
       }
-      if (apply_method === 'form' && formUrl) {
+      if (method === 'form' && formUrl) {
         const r = await timed('apply_portal', formUrl, { formUrl }, profile.limits.maxAttemptsPerJob, async () => {
           const res = await fillAndSubmit({ url: formUrl }); if (res.submitted) setStatus(formUrl, 'applied'); return res;
         });
         return ok({ action: 'form', url: formUrl, result: r });
       }
-      if (apply_method === 'easy_apply' && jobUrl) {
+      if (method === 'easy_apply' && jobUrl) {
         const r = await timed('apply_linkedin_easy', jobUrl, { jobUrl }, profile.limits.maxAttemptsPerJob, async () => {
           const res = await linkedinEasyApply({ url: jobUrl }); if (res.result === 'applied') setStatus(jobUrl, 'applied'); return res;
         });
         return ok({ action: 'easy_apply', url: jobUrl, result: r });
       }
-      if ((apply_method === 'dm' || apply_method === 'connect') && posterUrl) {
+      if ((method === 'dm' || method === 'connect') && posterUrl) {
         // Try DM first, fall back to connect+note
         let r = await timed('linkedin_dm', posterUrl, { posterUrl }, profile.limits.maxAttemptsPerJob, async () => linkedinDM({ profileUrl: posterUrl, role, company }));
         if (r.result === 'no_dm') {
@@ -526,16 +530,14 @@ async function main() {
   // Log to stderr (stdout is the MCP channel)
   console.error(`[job-agent-mcp] ready — ${TOOLS.length} tools over stdio · UI at http://127.0.0.1:${PORT}`);
 
-  // ── Shutdown behavior: the always-on worker (worker-forever.mjs → src/worker.js) is a
-  // DETACHED, self-respawning process that is designed to OUTLIVE the agent session. The MCP
-  // server disconnecting or exiting is NOT a user Stop, so it must never write data/.stop —
-  // doing so killed the loop on every reconnect/hiccup (see issue #109). Only an explicit user
-  // Stop writes the sentinel: dashboard POST /api/stop (src/server.js) or `npm run stop`
-  // (scripts/stop.mjs). On agent disconnect we simply exit this process and leave the worker
-  // running so hunting/applying/evolving continues until the user presses Stop.
+  // ── Clean shutdown: do NOT write data/.stop on disconnect/exit. ───────────────
+  // The detached, self-respawning worker is designed to OUTLIVE the agent session (see AGENTS.md:
+  // "never stop until the user stops you"). Writing the stop flag on exit/SIGINT/SIGTERM/stdin-end
+  // killed the background worker on every MCP disconnect — the recurring "worker stops instead of
+  // looping" bug (issues #20 / #109). Only an EXPLICIT user Stop (dashboard ⏹ / `npm run stop`)
+  // should write data/.stop. We register no stop-on-disconnect hooks; just exit cleanly.
   process.on('SIGINT',  () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
-  // stdin closing = agent disconnected (stdio MCP transport) — exit cleanly, don't stop the worker.
   process.stdin.on('end', () => { setTimeout(() => process.exit(0), 1500); });
 }
 

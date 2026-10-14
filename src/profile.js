@@ -86,10 +86,20 @@ const DEFAULT_PROFILE = {
   // Safety caps
   limits: {
     maxEmailsPerRun: 25,
+    // Email daily cap: 0 = UNLIMITED (default). Set a positive number to put a ceiling on how many
+    // application emails the agent sends per rolling 24h. Email via the user's Gmail carries no
+    // LinkedIn-restriction risk, so it is intentionally uncapped unless the user chooses otherwise.
+    maxEmailsPerDay: 0,
     maxAppliesPerRun: 15,
     maxAttemptsPerJob: 3,
     requestTimeoutMs: 30000,
     cooldownBetweenActionsMs: 4000,
+    // Which logged-in Gmail account tab to drive: mail/u/<N>/. 0 = first/default account.
+    gmailAccountIndex: 0,
+    // Email (mailer) pacing [min,max] ms between sends. Email carries NO LinkedIn-restriction
+    // risk — only Gmail throttling, which is generous — so it is deliberately brisk and is NOT
+    // the heavy Easy-Apply cooldown. Tune here if Gmail ever complains.
+    emailPaceMs: [4000, 9000],
     // Easy Apply account-safety: stop at this fraction of the (daily-refreshed) LinkedIn limit,
     // and wait a randomized [min,max] ms AFTER each successful Easy Apply so submissions never
     // burst. See src/limits.js for the researched daily limit.
@@ -103,6 +113,11 @@ const DEFAULT_PROFILE = {
   consent: {
     autoContribute: true,   // push code/doc improvements + file issues to the public repo automatically
     selfEvolveShare: true,  // share anonymized evolution insights upstream
+    // Multi-brain self-evolution loop: let INSTALLED coding-agent CLIs (codex, grok, claude,
+    // gemini, …) take turns reasoning over open encounters and pushing code/doc fixes UNATTENDED.
+    // Strictly CLIs — never API keys. OFF by default: it's a bigger step than autoContribute
+    // because external brains commit/PR on their own. Opt in from the dashboard or onboarding.
+    autoBrainLoop: false,
   },
 
   _onboarded: false,

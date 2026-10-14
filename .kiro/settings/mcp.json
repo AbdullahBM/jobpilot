@@ -3,7 +3,7 @@
     "jobpilot": {
       "command": "node",
       "args": ["start.js"],
-      "disabled": true,
+      "disabled": false,
       "autoApprove": []
     }
   }

@@ -25,6 +25,7 @@ import {
   renderHeader,
   renderLoginBanners,
   renderConsentBar,
+  renderBrainLoopBar,
   renderQuestionsBanner,
 } from './partials/header.js';
 import { renderKpis, renderQueueCards } from './partials/kpis.js';
@@ -139,6 +140,7 @@ ${renderHeader({ name: p.name, live, state, hbAge, totalJobs: tot.jobs, UIPORT }
 
   ${renderLoginBanners(state.loginNeeded)}
   ${renderConsentBar(p.consent?.autoContribute !== false)}
+  ${renderBrainLoopBar(p.consent?.autoBrainLoop === true)}
   ${renderQuestionsBanner(pend.length)}
 
   ${renderKpis(today, tot)}

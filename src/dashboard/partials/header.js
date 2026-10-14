@@ -58,6 +58,19 @@ export function renderConsentBar(autoContribute) {
 }
 
 /**
+ * Render the multi-brain self-evolution loop consent toggle bar.
+ * When ON, installed coding-agent CLIs (codex, grok, claude, gemini, …) take turns reasoning
+ * over open encounters and pushing code/doc fixes UNATTENDED. Strictly CLIs — never API keys.
+ * @param {boolean} autoBrainLoop - current consent state
+ * @returns {string} HTML
+ */
+export function renderBrainLoopBar(autoBrainLoop) {
+  return autoBrainLoop
+    ? `<div class="consentbar">🧠 <b>Multi-brain evolution loop: ON.</b> Your installed coding-agent CLIs (Codex · Grok · Claude · Gemini) take turns improving JobPilot's own tools and pushing <i>code/doc</i> fixes (hard-guarded — never your data). <button class="cbtn off" onclick="brainLoop(false)">Turn off</button></div>`
+    : `<div class="consentbar">🧠 <b>Multi-brain evolution loop: OFF.</b> Opt in to let your installed coding CLIs (Codex · Grok · Claude · Gemini — <i>CLIs only, never API keys</i>) autonomously reason over failures and improve the agent's own tools. <button class="cbtn on" onclick="brainLoop(true)">Enable multi-brain loop</button></div>`;
+}
+
+/**
  * Render the "questions pending" alert banner if any questions need answers.
  * @param {number} pendCount - number of pending questions
  * @returns {string} HTML (empty if no pending questions)
