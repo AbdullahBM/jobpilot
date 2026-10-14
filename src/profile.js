@@ -90,6 +90,11 @@ const DEFAULT_PROFILE = {
     maxAttemptsPerJob: 3,
     requestTimeoutMs: 30000,
     cooldownBetweenActionsMs: 4000,
+    // Easy Apply account-safety: stop at this fraction of the (daily-refreshed) LinkedIn limit,
+    // and wait a randomized [min,max] ms AFTER each successful Easy Apply so submissions never
+    // burst. See src/limits.js for the researched daily limit.
+    easyApplySafetyBuffer: 0.8,
+    easyApplyCooldownMs: [90000, 240000],
   },
 
   // Self-improvement is ON by default — JobPilot contributes code/doc fixes + files blocker
