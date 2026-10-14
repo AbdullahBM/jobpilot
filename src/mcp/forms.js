@@ -8,7 +8,8 @@ import { getProfile } from '../profile.js';
 import { textAnswer, choiceAnswer, coverText } from './answers.js';
 import { encounter, askLater, learn } from '../evolve.js';
 import fs from 'fs';
-import { cvAttachmentForJob } from '../cv.js';
+import { cvAttachmentForJob, selectCvVariant } from '../cv.js';
+import { setFields } from '../tracker.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 const CONFIRM_RE = /thank(s| you) for (applying|your (application|interest))|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)|your application is (complete|submitted|received)|application submitted|applied successfully|you('ve| have) applied|congrat|we will be in touch|we.?ll be in touch|check your email.*application/i;
@@ -321,6 +322,8 @@ async function followRedirect(page, startHost) {
 
 async function fillAll(page, unknown, job = {}) {
   const p = getProfile();
+  const selection = selectCvVariant(job, p);
+  if (job.url) setFields(job.url, { selected_cv_id: selection.id, selected_cv_path: selection.path, selected_cv_reason: selection.reason });
   const cvPath = cvAttachmentForJob(job, p);
   const fields = await page.evaluate(SCAN);
   const radios = {};
