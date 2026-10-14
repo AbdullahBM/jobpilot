@@ -7,7 +7,7 @@
 //   publicBoards — remoteok / remotive / himalayas / jobicy (email in description if any)
 import fetch from 'node-fetch';
 import { getContext } from '../agent/browser.js';
-import { getProfile } from '../profile.js';
+import { getProfile, excludedCompanyMatch } from '../profile.js';
 import { isBadEmail } from '../tracker.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
@@ -43,23 +43,25 @@ const FORM_RE = /greenhouse|lever\.co|ashbyhq|workable|smartrecruiters|breezy|re
 
 /** Relevance 0..1 + hard skip. Title drives it (the full text has every buzzword).
  *  Returns {rel, skip, why} */
-const CORE_TITLE = /\b(ai|a\.i\.|ml|machine learning|llm|gen ?ai|generative|nlp|rag|agent(ic)?|python|django|fastapi|backend|back[- ]end|full[- ]?stack|software|platform|cloud|devops|sre|founding|product engineer|solutions? architect|systems engineer|applied scientist|data engineer|mlops)\b/i;
+const CV_TITLE = /\b(devops|site reliability|sre|cloud|platform|infrastructure|solutions? architect|cloud architect|kubernetes|terraform)\b/i;
+const NON_CV_TITLE = /\b(ai|a\.i\.|ml|machine learning|llm|gen ?ai|generative|nlp|rag|agent(ic)?|data scientist|data engineer|analytics|backend|back[- ]end|full[- ]?stack|software engineer|frontend|front[- ]end|developer|application engineer|product engineer|project manager|manager|director|vp|head of|chief|course|training|certification|tutorial|bootcamp|class)\b/i;
 const OFF_STACK = /\b(java(?!script)|\.net|c#|ruby|rails|rust|golang|ios|android|swift|kotlin|flutter|php|wordpress|shopify|salesforce|sap|servicenow|qa|test(er|ing)?|quality|sdet|manager|director|vp|head of|chief|designer|sales|marketing|support|analyst|embedded|firmware|hardware|mechanical|electrical|civil|network engineer|security engineer|unity|game|blockchain|solidity|mainframe|cobol|angular|react native|frontend|front[- ]end)\b/i;
-const GEO_LOCK = /\b(us|u\.s\.|usa|united states|uk|eu|europe|canada|india|brazil|br|latam|germany|australia)[- ]?(only|based only|residents? only|citizens? only)\b|\bmust (be|reside|live) (located |based )?in (the )?(us|usa|united states|uk|eu|canada|india)\b|\b(onsite|on-site|work from office|wfo)\b(?![^.]{0,40}remote)|\bus citizen|security clearance|\bh1b\b/i;
+const GEO_LOCK = /\b(us|u\.s\.|usa|united states|uk|eu|europe|canada|india|brazil|br|latam|germany|australia)[- ]?(only|based only|residents? only|citizens? only)\b|\bmust (be|reside|live) (located |based )?in (the )?(us|usa|united states|uk|eu|canada|india)\b|\b(remote|hybrid)\s*\([^)]*\b(tx|md|in|ca|ny|wa|ma|va|fl|nj|il|ga|co|az|or|ut|dc)\b[^)]*\)|\b(remote|hybrid)\s*\(?(?:u\.?s\.?|usa|united states)\)?|\b100%\s+remote\s*\(?(?:u\.?s\.?|usa|united states)\)?|\b(onsite|on-site|work from office|wfo|hybrid)\b(?![^.]{0,40}remote)|\bus citizen|security clearance|\bh1b\b|\bvisa sponsorship\b|\bsponsorship required\b|\bmust have work authorization\b|(?:us|u\.s\.|united states)\s+(?:citizens?|nationals?|permanent residents?|green card holders?|ead holders?)|\bgreen card holders?\b|\bead holders?\b|\b(?:unable|cannot|can\'t) sponsor\b|\bno sponsorship\b|\bsponsorship (?:is )?(?:not|isn\'t) (?:available|provided|offered)\b|\bw-?2\b/i;
 export function score(text = '', title = '') {
   const p = getProfile();
   const t = text.toLowerCase();
   const head = (title || text.slice(0, 220)).toLowerCase();
+  const excluded = excludedCompanyMatch(text, p);
   const skipHit = (p.preferences?.skip || []).find(s => new RegExp(`\\b${s}`, 'i').test(head));
   const terms = new Set([...(p.skills || []), ...(p.preferences?.keywords || [])].map(s => s.toLowerCase()));
-  const core = CORE_TITLE.test(head);
+  const core = CV_TITLE.test(head) && !NON_CV_TITLE.test(head);
   const offStack = OFF_STACK.test(head) && !/\b(python|ai|ml|llm|fastapi|django)\b/.test(head);
   let hit = 0; for (const s of terms) if (t.includes(s)) hit++;
   const rel = Math.min(1, (core ? 0.45 : 0) + 0.55 * Math.min(1, hit / 6));
   const tooJunior = /\b(freshers?|0\s*[-–]\s*[12]\s*(years|yrs)|entry[- ]level|internship|interns?\b|trainee|graduate program)\b/.test(t.slice(0, 700));
   const equityOnly = /\b(co-?founder|cofondat|equity[- ]only|unpaid|sweat equity|no salary)\b/.test(t.slice(0, 700));
   const geo = GEO_LOCK.test(text.slice(0, 2500));
-  const why = skipHit ? `skip term "${skipHit}"` : !core ? 'title not an engineering role I target' : offStack ? 'off-stack title' : tooJunior ? 'junior/fresher' : equityOnly ? 'co-founder / equity-only' : geo ? 'location-restricted / onsite' : '';
+  const why = excluded ? `excluded company "${excluded}"` : skipHit ? `skip term "${skipHit}"` : !core ? 'title not aligned with CV target roles' : offStack ? 'off-stack title' : tooJunior ? 'junior/fresher' : equityOnly ? 'co-founder / equity-only' : geo ? 'location-restricted / authorization' : '';
   return { rel: +rel.toFixed(2), skip: !!why, why };
 }
 
@@ -112,7 +114,7 @@ export async function liPosts(query, { maxScroll = 6, datePosted = 'past-24h' } 
       const cut = text.search(/\n\s*(Follow|Connect|Subscribe)\s*\n/);
       const bodyTxt = cut > 0 ? text.slice(cut).replace(/^\s*(Follow|Connect|Subscribe)\s*/, '') : text;
       const role = guessRole(bodyTxt);
-      const s = score(bodyTxt, `${role} ${bodyTxt.slice(0, 500)}`);
+      const s = score(bodyTxt, role);
       const postUrl = r.urn ? `https://www.linkedin.com/feed/update/${r.urn}/` : '';
       const channel = emails[0] ? 'email' : jobUrl ? 'easy_apply' : formUrl ? 'form' : r.actorUrl.includes('/in/') ? 'connect' : 'none';
       leads.push({
@@ -154,7 +156,7 @@ export async function liJobs(query, { easyOnly = true, tpr = 86400, geoId = '920
       for (const c of cards) {
         const [title, company, location] = [c.lines[0], c.lines[1] === c.lines[0] ? c.lines[2] : c.lines[1], c.lines.find(l => /remote|\(|,/i.test(l)) || ''];
         const ago = (c.text.match(/(\d+\s+(?:minute|hour|day|week|month)s?\s+ago)/) || [])[1] || '';
-        const s = score(`${title} ${company}`, title);
+        const s = score(`${title} ${company} ${location}`, title);
         out.push({
           source: easyOnly ? 'linkedin_easy' : 'linkedin_jobs', role: title, company, location, url: `https://www.linkedin.com/jobs/view/${c.id}/`, applyUrl: `https://www.linkedin.com/jobs/view/${c.id}/`,
           postedAt: relToIso(ago) || (/within the past 24/i.test(c.text) ? new Date(Date.now() - 12 * 3600e3).toISOString() : ''), postedRaw: ago,
@@ -251,7 +253,7 @@ export async function publicBoards({ maxAgeHours = 72 } = {}) {
   };
   const get = async u => { try { const r = await fetch(u, { headers: { 'User-Agent': UA, Accept: 'application/json' }, timeout: 20000 }); return r.ok ? r.json() : null; } catch { return null; } };
   const strip = h => (h || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&amp;/g, ' ').replace(/\s+/g, ' ');
-  for (const tag of ['ai', 'python', 'backend', 'llm']) {
+  for (const tag of ['devops', 'kubernetes', 'terraform', 'cloud', 'sre']) {
     const j = await get(`https://remoteok.com/api?tag=${tag}`);
     for (const x of (j || []).slice(1)) push('remoteok', x.position, x.company, x.url, strip(x.description), Date.parse(x.date), x.apply_url);
   }

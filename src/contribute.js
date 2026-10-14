@@ -15,12 +15,21 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 import { ROOT, DATA } from './config.js';
-import { openEncounters } from './evolve.js';
+import {
+  openEncounters, evolutionAudits, markAuditIssue, linkAuditPr,
+  recordEvolutionAudit,
+} from './evolve.js';
 
 const run = promisify(execFile);
 const git = (...a) => run('git', a, { cwd: ROOT }).then(r => r.stdout.trim())
   .catch(e => { throw new Error((e.stderr || e.stdout || e.message).slice(0, 300)); });
 const gh  = (...a) => run('gh',  a, { cwd: ROOT }).then(r => r.stdout.trim());
+
+function parseGitHubRepo(raw = '') {
+  const s = String(raw).trim().replace(/\.git$/, '');
+  const m = s.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  return m ? m[1] : '';
+}
 
 // ── Author identity ─────────────────────────────────────────────────────────
 // Commits are attributed to the GitHub USERNAME (e.g. "maazbin"), NOT a real name or a
@@ -102,18 +111,37 @@ async function safeStage() {
  * @returns {Promise<{origin, owner, upstream, base, isFork}>}
  */
 export async function repoInfo() {
+  // Prefer the checkout's remotes. `gh repo view` can resolve the authenticated
+  // upstream repository even when this checkout is a fork, which would make a
+  // cross-fork PR look like a same-repository branch and fail with "no commits".
+  const originRemote = parseGitHubRepo(await git('remote', 'get-url', 'origin').catch(() => ''));
+  const upstreamRemote = parseGitHubRepo(await git('remote', 'get-url', 'upstream').catch(() => ''));
   try {
     const j = JSON.parse(await gh('repo', 'view', '--json', 'nameWithOwner,defaultBranchRef,parent'));
-    const upstream = j.parent ? j.parent.nameWithOwner : j.nameWithOwner;
+    const parentName = j.parent?.nameWithOwner || (j.parent?.owner?.login && j.parent?.name ? `${j.parent.owner.login}/${j.parent.name}` : '');
+    const origin = originRemote || j.nameWithOwner;
+    const upstream = upstreamRemote || parentName || j.nameWithOwner;
     return {
-      origin:   j.nameWithOwner,
-      owner:    j.nameWithOwner.split('/')[0],
+      origin,
+      owner:    origin.split('/')[0],
       upstream,
       base:     j.defaultBranchRef?.name || 'main',
-      isFork:   !!j.parent,
+      isFork:   (Boolean(originRemote && upstreamRemote && originRemote !== upstreamRemote) || !!j.parent),
     };
   } catch {
-    return { origin: '', owner: '', upstream: '', base: 'main', isFork: false };
+    // `gh repo view` can fail in a worktree without a GitHub repository context.
+    // Fall back to the configured remotes so self-evolution never constructs
+    // an invalid `gh pr create --repo` invocation.
+    const origin = parseGitHubRepo(await git('remote', 'get-url', 'origin').catch(() => ''));
+    const upstreamRemote = parseGitHubRepo(await git('remote', 'get-url', 'upstream').catch(() => ''));
+    const upstream = upstreamRemote || origin;
+    return {
+      origin,
+      owner: origin.split('/')[0] || '',
+      upstream,
+      base: 'main',
+      isFork: !!upstreamRemote && upstreamRemote !== origin,
+    };
   }
 }
 
@@ -173,6 +201,7 @@ export async function syncBranch() {
 export async function contributeViaPR(message) {
   const info = await repoInfo();
   const { base, upstream, owner, isFork } = info;
+  if (!upstream || !owner) return { ...info, pushed: false, reason: 'GitHub repository identity unavailable' };
   const startBranch = (await git('rev-parse', '--abbrev-ref', 'HEAD').catch(() => base)) || base;
   const branch = `self-evolve/${Date.now()}`;
   try {
@@ -180,6 +209,7 @@ export async function contributeViaPR(message) {
     let files;
     try { files = await safeStage(); } catch (e) { return { pushed: false, reason: e.message }; }
     if (!files.length) return { pushed: false, reason: 'nothing to contribute' };
+    const improvementAudit = recordEvolutionAudit('improvement', `${message}|${files.join('|')}`, { needsCode: true });
     await git('reset').catch(() => {});           // unstage; commit on a dedicated branch
 
     await git('checkout', '-b', branch);
@@ -210,12 +240,99 @@ export async function contributeViaPR(message) {
     // we set — the GitHub username — is preserved verbatim (squash lets GitHub rewrite the
     // author to the account's profile display name).
     await gh('pr', 'merge', '--auto', '--merge', url).catch(() => {});
-    return { pr: url, pushed: true, files };
+    return { pr: url, pushed: true, files, audit: improvementAudit };
   } catch (e) {
     return { pushed: false, reason: e.message };
   } finally {
     await git('checkout', startBranch).catch(() => {});
   }
+}
+
+// The upstream repository already has this established label. Reuse it for
+// audit records instead of inventing a label that contributors may not be
+// permitted to create on the upstream repository.
+const AUDIT_LABEL = 'self-evolve';
+const AUDIT_FALLBACK_LABEL = 'enhancement';
+
+function auditTitle(a) { return `Audit: ${a.kind} · ${a.fingerprint}`; }
+
+function auditBody(a) {
+  return [
+    '## JobPilot self-evolution audit',
+    '',
+    `- Event type: **${a.kind}**`,
+    '- Fingerprint: `' + a.fingerprint + '`',
+    `- Observations: **${a.occurrences}**`,
+    `- Code/PR follow-up: **${a.needs_code ? 'required or expected' : 'not required'}**`,
+    `- Local status: **${a.status}**`,
+    a.pr_url ? `- Linked PR: ${a.pr_url}` : '- Linked PR: pending / none',
+    '',
+    'This issue is an anonymized audit record. It intentionally excludes application questions, answers, CV/profile data, job URLs, screenshots, credentials, and personal contact data.',
+  ].join('\n');
+}
+
+/**
+ * Mirror the local learning ledger to dedicated GitHub audit issues.
+ * Audit issues use the repository's established `self-evolve` label. Open
+ * events stay open; resolved events are closed with their resolution and PR
+ * link.
+ */
+export async function syncEvolutionAuditIssues({ prUrl = '' } = {}) {
+  const { initDB } = await import('./tracker.js');
+  await initDB();
+  const info = await repoInfo();
+  const repo = info.upstream || info.origin;
+  if (!repo) return { created: [], reopened: [], closed: [], linked: [], reason: 'repository identity unavailable' };
+  const created = [], reopened = [], closed = [], linked = [];
+  let issueLabel = AUDIT_LABEL;
+  try {
+    const labels = JSON.parse(await gh('label', 'list', '--repo', repo, '--limit', '100', '--json', 'name'));
+    if (!labels.some(x => x.name === AUDIT_LABEL)) {
+      await gh('label', 'create', AUDIT_LABEL, '--repo', repo, '--color', '6f42c1', '--description', 'Anonymized self-evolution audit trail');
+    }
+  } catch {
+    // Contributors may create issues but lack permission to create repository labels.
+    // Use an existing non-PR label and retain the stable Audit: title prefix.
+    issueLabel = AUDIT_FALLBACK_LABEL;
+  }
+
+  let remote = [];
+  try { remote = JSON.parse(await gh('issue', 'list', '--repo', repo, '--state', 'all', '--limit', '500', '--json', 'number,title,url,state,labels')); } catch (e) {
+    return { created, reopened, closed, linked, reason: e.message };
+  }
+  const byTitle = new Map(remote.filter(x => String(x.title || '').startsWith('Audit: ')).map(x => [x.title, x]));
+  const audits = evolutionAudits(300);
+
+  for (const a of audits) {
+    const title = auditTitle(a);
+    let issue = byTitle.get(title);
+    if (!issue) {
+      try {
+        const url = await gh('issue', 'create', '--repo', repo, '--title', title, '--label', issueLabel, '--body', auditBody(a));
+        const m = String(url).match(/issues\/(\d+)/);
+        markAuditIssue(a.fingerprint, m ? +m[1] : null, url);
+        issue = { number: m ? +m[1] : null, title, url, state: 'OPEN' };
+        created.push(url);
+      } catch { continue; }
+    } else if (!a.issue_number || a.issue_url !== issue.url) {
+      markAuditIssue(a.fingerprint, issue.number, issue.url);
+    }
+
+    if (prUrl && a.needs_code && a.pr_url !== prUrl) {
+      linkAuditPr(a.fingerprint, prUrl);
+      try { await gh('issue', 'comment', String(issue.number), '--repo', repo, '--body', `Linked self-evolution PR: ${prUrl}`); linked.push(issue.url); } catch {}
+    }
+    const state = String(issue.state || '').toLowerCase();
+    if (a.status === 'resolved' && state === 'open') {
+      try {
+        await gh('issue', 'close', String(issue.number), '--repo', repo, '--comment', `Resolved locally: ${a.resolution || 'resolution recorded in JobPilot evolution memory.'}${a.pr_url ? `\n\nLinked PR: ${a.pr_url}` : ''}`);
+        closed.push(issue.url);
+      } catch {}
+    } else if (a.status === 'open' && state === 'closed') {
+      try { await gh('issue', 'reopen', String(issue.number), '--repo', repo, '--comment', 'Reopened automatically: this audit fingerprint was observed again.'); reopened.push(issue.url); } catch {}
+    }
+  }
+  return { created, reopened, closed, linked };
 }
 
 /**
@@ -414,10 +531,20 @@ export async function contributeRound(
   }
   if (!enabled) return { skipped: true, reason: 'self-contribution is turned off in the dashboard' };
 
+  // Contribution can be invoked by the worker or directly by the MCP/agent.
+  // Make the latter safe too: audit and encounter reads must never depend on a
+  // prior worker boot having initialized the shared sql.js handle.
+  const { initDB } = await import('./tracker.js');
+  await initDB();
+
   const info = await repoInfo();
 
   // 1. Always sync first — pull new version before contributing
   const sync = await syncBranch().catch(e => ({ synced: false, reason: e.message }));
+
+  // Audit learning/improvement events alongside the normal blocker issue flow.
+  // This is deliberately separate from the self-evolve PR label/workflow.
+  const auditBefore = await syncEvolutionAuditIssues().catch(e => ({ created: [], reason: e.message }));
 
   // 2. File issues for recurring blockers
   const issues = await fileBlockerIssues().catch(e => ({ filed: [], reason: e.message }));
@@ -427,6 +554,7 @@ export async function contributeRound(
   //    main — so the security gate + boot smoke test always run first. For a fork this is a
   //    cross-fork PR to upstream; for the main repo it is a self-evolve PR to its own main.
   const pr = await contributeViaPR(message).catch(e => ({ pushed: false, reason: e.message }));
+  const auditAfter = await syncEvolutionAuditIssues({ prUrl: pr.pr || '' }).catch(e => ({ created: [], reason: e.message }));
 
   // 4. Main repo ALSO acts as reviewer: merge every open self-evolve PR that has passed CI
   //    (including the one just opened, once its checks are green), then fast-forward main.
@@ -435,5 +563,5 @@ export async function contributeRound(
     review = await reviewAndMergePRs().catch(e => ({ merged: [], skipped: [], reason: e.message }));
   }
 
-  return { sync, issues, pr, review };
+  return { sync, issues, audits: { before: auditBefore, after: auditAfter }, pr, review };
 }

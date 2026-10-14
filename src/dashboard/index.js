@@ -18,7 +18,7 @@ import { rows, one, initDB } from '../tracker.js';
 import { DASH, DATA } from '../config.js';
 import { getProfile } from '../profile.js';
 import { recommendAnswer } from '../mcp/answers.js';
-import { agentAnsweredQuestions } from '../evolve.js';
+import { agentAnsweredQuestions, evolutionAudits } from '../evolve.js';
 
 import { dashStyles } from './styles.js';
 import {
@@ -38,6 +38,7 @@ import {
   renderBankTable,
 } from './partials/tables.js';
 import { renderQuestionsTab, renderEvolutionTab } from './partials/evolution.js';
+import { renderCvTab } from './partials/cv.js';
 import { dashScripts } from './partials/clientscripts.js';
 import { esc, STATUS, badge } from './helpers.js';
 
@@ -105,11 +106,15 @@ export function writeDash() {
   const bank   = q(`SELECT * FROM jobs ${ORDER} LIMIT 1500`);
 
   // ── Evolution / Questions ────────────────────────────────────────────────────
-  let pend = [], agentAnswered = [], enc = [], learned = [];
+  let pend = [], agentAnswered = [], enc = [], learned = [], audits = [];
   try { pend         = q(`SELECT * FROM answers WHERE pending=1 ORDER BY seen DESC LIMIT 60`); } catch {}
   try { agentAnswered= agentAnsweredQuestions(60); } catch {}
   try { enc          = q(`SELECT * FROM encounters WHERE status IN ('open','regressed') ORDER BY count DESC, last_seen DESC LIMIT 60`); } catch {}
   try { learned      = q(`SELECT * FROM answers WHERE pending=0 AND answer!='' ORDER BY uses DESC, updated_at DESC LIMIT 100`); } catch {}
+  try { audits       = evolutionAudits(120); } catch {}
+  let cvJobs = [], answerReport = [];
+  try { cvJobs = q(`SELECT role, company, cv_match_percent, cv_drift_percent, cv_missing_terms, tailor_status FROM jobs ORDER BY id DESC LIMIT 120`); } catch {}
+  try { answerReport = q(`SELECT question, answer, confidence, match_percent, confidence_basis, options FROM answers WHERE pending=2 ORDER BY updated_at DESC LIMIT 120`); } catch {}
 
   // ── Status legend ────────────────────────────────────────────────────────────
   const statusCounts = q('SELECT status, COUNT(*) n FROM jobs GROUP BY status ORDER BY n DESC');
@@ -150,6 +155,7 @@ ${renderHeader({ name: p.name, live, state, hbAge, totalJobs: tot.jobs, UIPORT }
     <button id="b-done"       onclick="switchTab('done')">✅ Done log</button>
     <button id="b-manual"     onclick="switchTab('manual')">🙋 Needs you (${manual.length})</button>
     <button id="b-questions"  onclick="switchTab('questions')" style="${pend.length ? 'color:#fcd34d;border-color:#a16207' : ''}">🧠 Questions (${pend.length})</button>
+    <button id="b-cv"         onclick="switchTab('cv')">📄 CV report</button>
     <button id="b-evolution"  onclick="switchTab('evolution')">🧬 Evolution (${enc.length})</button>
     <button id="b-sent"       onclick="switchTab('sent')">📤 Emails sent</button>
     <button id="b-conns"      onclick="switchTab('conns')">🤝 Connects</button>
@@ -173,8 +179,11 @@ ${renderHeader({ name: p.name, live, state, hbAge, totalJobs: tot.jobs, UIPORT }
   <div class="pane" id="p-questions">
     ${renderQuestionsTab(pend, agentAnswered, recommendAnswer)}
   </div>
+  <div class="pane" id="p-cv">
+    ${renderCvTab({ jobs: cvJobs, answers: answerReport, allowTailoredCv: p.preferences?.allowTailoredCv === true, cvPath: p.cvPath })}
+  </div>
   <div class="pane" id="p-evolution">
-    ${renderEvolutionTab(enc, learned)}
+    ${renderEvolutionTab(enc, learned, audits)}
   </div>
   <div class="pane" id="p-sent">${renderEmailLogTable(emails)}</div>
   <div class="pane" id="p-conns">${renderConnectsTable(conns)}</div>

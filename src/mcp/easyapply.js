@@ -9,6 +9,7 @@ import { getProfile } from '../profile.js';
 import { textAnswer, choiceAnswer } from './answers.js';
 import { learn, askLater, encounter } from '../evolve.js';
 import fs from 'fs';
+import { cvAttachmentForJob } from '../cv.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 const APPLIED_RE = /Application submitted|Applied \d+ (second|minute|hour|day)s? ago|You applied|application was sent/i;
@@ -59,14 +60,18 @@ const SCAN = (dlg) => {
   const errors = [...dlg.querySelectorAll('[role="alert"], [aria-live], .artdeco-inline-feedback--error')]
     .map(e => e.innerText.trim()).filter(t => t && /required|valid|enter|select|must|between|larger|smaller|whole number|decimal/i.test(t));
   const text = dlg.innerText.replace(/\s+/g, ' ');
-  return { fields: out, errors, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%/) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
+  // LinkedIn alternates between "1/6 pages", "16%", and
+  // "16 percent complete". Keep all forms so a validation-blocked page is
+  // recognized as unchanged and its missing required fields can be surfaced.
+  return { fields: out, errors, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%|(\d+)\s+percent\s+complete/i) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
 };
 
 const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|country code|phone country code)/i;
 
-async function fillPage(page, dlg, ctx) {
+async function fillPage(page, dlg, ctx, job = {}) {
   const { fields } = await dlg.evaluate(SCAN);
   const p = getProfile();
+  const cvPath = cvAttachmentForJob(job, p);
   const groups = {};
   for (const f of fields) if (f.type === 'radio') (groups[f.name || f.q] ||= []).push(f);
   // Checkbox GROUPS: LinkedIn renders "select all that apply" / single-select questions as a set
@@ -83,7 +88,7 @@ async function fillPage(page, dlg, ctx) {
     const loc = page.locator(`[data-ja="${f.id}"]`);
     try {
       if (f.type === 'file') {
-        if (p.cvPath && fs.existsSync(p.cvPath) && /resume|cv/i.test(f.q) && !fields.some(x => x.type === 'radio' && x.checked && /resume/i.test(x.q))) await loc.setInputFiles(p.cvPath).catch(() => {});
+        if (cvPath && fs.existsSync(cvPath) && /resume|cv/i.test(f.q) && !fields.some(x => x.type === 'radio' && x.checked && /resume/i.test(x.q))) await loc.setInputFiles(cvPath).catch(() => {});
         continue;
       }
       if (f.type === 'radio') continue;
@@ -189,7 +194,7 @@ async function verifyApplied(page, url) {
  * Apply via Easy Apply. Returns {ok, result, detail, questions?, meta, externalUrl?}
  * result: applied | already_applied | no_easy_apply | needs_answers | stuck | closed | error | dry_run_ready
  */
-export async function easyApply({ url, timeoutMs = 120000, dryRun = false }) {
+export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job = {} }) {
   const bctx = await getContext();
   const page = await bctx.newPage();
   page.setDefaultTimeout(15000);
@@ -256,7 +261,7 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false }) {
 
     let lastProgress = '', same = 0;
     for (let step = 0; step < 15 && Date.now() - t0 < timeoutMs; step++) {
-      await fillPage(page, dlg, ctx);
+      await fillPage(page, dlg, ctx, job);
       await SLEEP(500);
       const submit = dlg.getByRole('button', { name: /submit application/i }).first();
       if (await submit.isVisible().catch(() => false)) {

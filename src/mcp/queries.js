@@ -1,6 +1,6 @@
 // src/mcp/queries.js — Generate diverse search queries from the user profile.
-// Covers ALL the user's roles (backend, python, system design, product eng, AI, …),
-// not just AI, so lead sourcing spans everything they'd actually take.
+// Search only the roles explicitly selected during onboarding.  The worker must
+// not broaden a DevOps/cloud profile into generic software, AI, or freelance work.
 import { getProfile } from '../profile.js';
 
 // Phrasings that surface HIRING POSTS (not just listings) on LinkedIn content search.
@@ -15,9 +15,7 @@ export function buildQueries({ limit = 26 } = {}) {
   const p = getProfile();
   const roles = (p.preferences?.roles || []).length
     ? p.preferences.roles
-    : ['AI Engineer', 'Backend Engineer', 'Python Engineer', 'Software Engineer'];
-  const kws = p.preferences?.keywords || [];
-  const skills = p.skills || p.preferences?.skills || [];
+    : ['DevOps Engineer', 'Site Reliability Engineer', 'Cloud Engineer', 'Platform Engineer', 'Cloud Infrastructure Engineer', 'Cloud Solution Architect'];
   const remote = p.preferences?.remoteOnly ? ' remote' : '';
 
   const out = new Set();
@@ -26,42 +24,25 @@ export function buildQueries({ limit = 26 } = {}) {
     out.add(`we are hiring ${role}${remote}`);
     out.add(`looking for ${role}${remote} email your cv`);
   }
-  // Keyword-driven (langchain, fastapi, system design, …)
-  for (const k of kws.slice(0, 8)) out.add(`hiring ${k} engineer${remote}`);
-  // SKILLS-driven — match on what they can DO, not only titled roles (steering).
-  for (const s of skills.slice(0, 8)) out.add(`hiring ${s}${remote}`);
-  // Freelance / contract — a whole separate lane the user explicitly wants.
-  out.add(`freelance developer${remote} hiring`);
-  out.add(`contract engineer${remote} dm me`);
-  out.add(`looking for freelance${remote} email your cv`);
-  // Generic high-yield outreach phrasings
-  out.add(`hiring software engineer${remote} dm me`);
-  out.add(`founding engineer${remote} hiring`);
-
   return [...out].slice(0, limit);
 }
 
 /** Queries for LinkedIn JOB LISTINGS (jobs/search), roles + skills + freelance. */
 export function buildListingQueries({ limit = 18 } = {}) {
   const p = getProfile();
-  const roles = (p.preferences?.roles || []).length ? p.preferences.roles : ['AI Engineer', 'Backend Engineer'];
-  const skills = p.skills || p.preferences?.skills || [];
+  const roles = (p.preferences?.roles || []).length ? p.preferences.roles : ['DevOps Engineer', 'Site Reliability Engineer', 'Cloud Engineer', 'Platform Engineer', 'Cloud Infrastructure Engineer', 'Cloud Solution Architect'];
   const remote = p.preferences?.remoteOnly ? ' remote' : '';
   const out = new Set();
   for (const r of roles) out.add(`${r}${remote}`);
-  for (const s of skills.slice(0, 6)) out.add(`${s}${remote}`);
-  out.add(`freelance${remote}`);
-  out.add(`contract${remote}`);
   return [...out].slice(0, limit);
 }
 
 /** Freelance/marketplace listing queries (login-free boards too). */
 export function buildFreelanceQueries() {
   const p = getProfile();
-  const skills = (p.skills || p.preferences?.skills || []).slice(0, 6);
-  const base = ['freelance', 'contract', 'part-time remote'];
+  const roles = (p.preferences?.roles || []).length ? p.preferences.roles : ['DevOps Engineer', 'Cloud Engineer', 'Platform Engineer'];
+  const base = roles.map(r => `freelance ${r}`);
   const out = new Set(base);
-  for (const s of skills) out.add(`freelance ${s}`);
   return [...out];
 }
 

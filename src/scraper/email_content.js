@@ -13,7 +13,9 @@ function roleLabel(job) {
 export function subject(job, profile = getProfile()) {
   const r = roleLabel(job);
   const co = clean(job.company);
-  return `${r === 'engineering role' ? 'Application' : r}${co && co.length < 40 && !/^r\//.test(co) ? ' at ' + co : ''} — ${profile.name} (Senior SWE, AI/Backend, 5+ yrs)`;
+  const title = clean(profile.currentTitle || profile.headline || 'DevOps Engineer');
+  const years = profile.yearsExperience ? `${profile.yearsExperience}+ yrs` : 'experienced';
+  return `${r === 'engineering role' ? 'Application' : r}${co && co.length < 40 && !/^r\//.test(co) ? ' at ' + co : ''} — ${profile.name} (${title}, ${years})`;
 }
 
 export function body(job, profile = getProfile()) {

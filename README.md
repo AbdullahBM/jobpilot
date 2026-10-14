@@ -103,7 +103,7 @@ JobPilot does **not** invent answers to questions like salary, visa/work-authori
 period. Here's exactly how an application question gets answered, in order:
 
 1. **From the post + your profile.** Most screening questions are already answered by what you gave
-   it (years of experience, location, links, salary expectation) or stated in the job post itself.
+   it (years of experience, location, links, country-specific salary expectations) or stated in the job post itself.
 2. **Harvested from your own LinkedIn.** It reuses the answers you've *already* filled on past
    Easy Apply forms — your real numbers, not a model's guess.
 3. **It asks you — once.** Anything it genuinely can't infer becomes a **question for you** in the
@@ -132,7 +132,8 @@ one-click "log in here" banner, and it resumes automatically once you're back in
 - **All four channels working end-to-end** against the live 2026 LinkedIn / ATS DOM — including the
   shadow-DOM Easy Apply modal and the "Connect is hidden under the More menu" profile layout.
 - **A real answer engine** that harvests your prefilled answers, reuses them for *similar* questions
-  (fuzzy + stemmed matching), converts currencies/periods for salary, handles yes/no work-auth
+  (fuzzy + stemmed matching), selects salary expectations by country/currency, converts
+  currencies/periods, keeps current salary separate, handles yes/no work-auth
   logic, shows you everything it auto-answered, and escalates only the truly-unknown.
 - **A concurrent, never-stop worker** — scout · mailer · applier · connector · **evolver** run in
   parallel lanes under a supervisor that auto-restarts any lane that crashes; global crash handlers

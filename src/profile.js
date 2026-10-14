@@ -32,7 +32,9 @@ const DEFAULT_PROFILE = {
   skills: [],            // ["Python","FastAPI","AWS",…]
   summary: '',           // short professional summary
   extra: '',             // FREE-FORM: anything else useful for the agent (context, preferences, notes)
-  salary: {},            // { amount, currency, period }  e.g. {amount:500000,currency:"PKR",period:"month"}
+  salary: {},            // legacy/default expected salary: { amount, currency, period }
+  currentSalary: {},     // current compensation: { amount, currency, period }
+  salaryExpectations: [], // [{ country, min, max, currency, period }]
   workAuth: {},          // { needsSponsorship:bool, authorizedIn:["Pakistan"], willingToRelocate:bool }
 
   // Files
@@ -55,6 +57,7 @@ const DEFAULT_PROFILE = {
   preferences: {
     roles: [],           // ["AI Engineer", "ML Engineer", "Backend Engineer"]
     skip: [],            // ["sales", "junior", "intern"]
+    avoidCompanies: [],  // employer/company names to never apply to (current employer is also excluded)
     remoteOnly: true,
     minSalary: 0,
     locations: [],       // acceptable locations, empty = anywhere
@@ -65,6 +68,9 @@ const DEFAULT_PROFILE = {
     //   'country'   — same country as your location only
     //   'all'       — alias for worldwide (no filtering)
     locationScope: 'worldwide',
+    // Off by default. When enabled, a job-specific draft may be generated from
+    // canonical CV/profile facts after the dashboard explicitly records approval.
+    allowTailoredCv: false,
   },
 
   // Answers to common application questions (agent uses semantically)
@@ -110,6 +116,8 @@ function load() {
       limits: { ...DEFAULT_PROFILE.limits, ...(saved.limits || {}) },
       consent: { ...DEFAULT_PROFILE.consent, ...(saved.consent || {}) },
       salary: { ...DEFAULT_PROFILE.salary, ...(saved.salary || {}) },
+      currentSalary: { ...DEFAULT_PROFILE.currentSalary, ...(saved.currentSalary || {}) },
+      salaryExpectations: Array.isArray(saved.salaryExpectations) ? saved.salaryExpectations : [],
       workAuth: { ...DEFAULT_PROFILE.workAuth, ...(saved.workAuth || {}) },
     };
   } catch {
@@ -150,6 +158,25 @@ export function getProfile() {
   return p;
 }
 
+function normalizeCompany(value = '') {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** Return the configured current/avoided company name found in text, or ''. */
+export function excludedCompanyMatch(text = '', profile = getProfile()) {
+  const hay = normalizeCompany(text);
+  if (!hay) return '';
+  const names = [profile.currentCompany, ...(profile.preferences?.avoidCompanies || [])]
+    .map(v => String(v || '').trim())
+    .filter(v => normalizeCompany(v).length >= 3);
+  return names.find(name => hay.includes(normalizeCompany(name))) || '';
+}
+
+/** Whether a lead mentions the current employer or an explicitly avoided company. */
+export function isExcludedCompany(text = '', profile = getProfile()) {
+  return Boolean(excludedCompanyMatch(text, profile));
+}
+
 /** Deep patch. Pass nested objects to merge them. */
 export function updateProfile(patch = {}) {
   const p = load();
@@ -162,11 +189,13 @@ export function updateProfile(patch = {}) {
     smtp:        { ...p.smtp,        ...(patch.smtp || {}) },
     consent:     { ...p.consent,     ...(patch.consent || {}) },
     salary:      { ...p.salary,      ...(patch.salary || {}) },
+    currentSalary: { ...p.currentSalary, ...(patch.currentSalary || {}) },
     workAuth:    { ...p.workAuth,    ...(patch.workAuth || {}) },
   };
   if (Array.isArray(patch.skills)) merged.skills = patch.skills;
   if (Array.isArray(patch.projects)) merged.projects = patch.projects;
   if (Array.isArray(patch.loggedInSources)) merged.loggedInSources = patch.loggedInSources;
+  if (Array.isArray(patch.salaryExpectations)) merged.salaryExpectations = patch.salaryExpectations;
   return persist(merged);
 }
 
