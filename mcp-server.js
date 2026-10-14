@@ -499,20 +499,13 @@ async function main() {
   // Log to stderr (stdout is the MCP channel)
   console.error(`[job-agent-mcp] ready — ${TOOLS.length} tools over stdio · UI at http://127.0.0.1:${PORT}`);
 
-  // ── Shutdown hook: when the agent disconnects / process exits, write the stop flag
-  // so the auto-started background worker (worker-forever.mjs) detects it and stops.
-  // This ensures no orphaned worker processes outlive the agent session.
-  const { DATA: DATA_DIR } = await import('./src/config.js');
-  const STOPFILE_PATH = path.join(DATA_DIR, '.stop');
-  function writeStop() {
-    try { fs.writeFileSync(STOPFILE_PATH, new Date().toISOString()); } catch {}
-    console.error('[job-agent-mcp] stop flag written — background worker will exit');
-  }
-  process.on('exit', writeStop);
-  process.on('SIGINT',  () => { writeStop(); process.exit(0); });
-  process.on('SIGTERM', () => { writeStop(); process.exit(0); });
-  // stdin closing = agent disconnected (stdio MCP transport)
-  process.stdin.on('end', () => { writeStop(); setTimeout(() => process.exit(0), 1500); });
+  // ── Clean shutdown: do NOT write data/.stop on disconnect/exit. ───────────────
+  // The detached, self-respawning worker is designed to OUTLIVE the agent session (see AGENTS.md:
+  // "never stop until the user stops you"). Writing the stop flag on exit/SIGINT/SIGTERM/stdin-end
+  // killed the background worker on every MCP disconnect — the recurring "worker stops instead of
+  // looping" bug (issues #20 / #109). Only an EXPLICIT user Stop (dashboard ⏹ / `npm run stop`)
+  // should write data/.stop. So we register no stop-on-disconnect hooks here.
+  // (Fix harvested from PR #117 — @Huzaifa-ali.)
 }
 
 main().catch(e => { console.error('FATAL:', e); process.exit(1); });
