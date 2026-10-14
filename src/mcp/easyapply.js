@@ -60,7 +60,10 @@ const SCAN = (dlg) => {
   const errors = [...dlg.querySelectorAll('[role="alert"], [aria-live], .artdeco-inline-feedback--error')]
     .map(e => e.innerText.trim()).filter(t => t && /required|valid|enter|select|must|between|larger|smaller|whole number|decimal/i.test(t));
   const text = dlg.innerText.replace(/\s+/g, ' ');
-  return { fields: out, errors, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%/) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
+  // LinkedIn alternates between "1/6 pages", "16%", and
+  // "16 percent complete". Keep all forms so a validation-blocked page is
+  // recognized as unchanged and its missing required fields can be surfaced.
+  return { fields: out, errors, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%|(\d+)\s+percent\s+complete/i) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
 };
 
 const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|country code|phone country code)/i;
