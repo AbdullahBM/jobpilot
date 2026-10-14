@@ -162,19 +162,26 @@ async function checkOption(page, dataJa, optText, groupName) {
     const byText = page.locator(`label, [role="radio"], [role="checkbox"]`).filter({ hasText: new RegExp(`^\\s*${optText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
     if (await byText.count().catch(() => 0)) { await byText.click({ force: true, timeout: 2000 }).catch(() => {}); await new Promise(r => setTimeout(r, 400)); if (await groupChecked()) return true; }
   }
-  // 3) JS fallback by group name: set the right input checked + dispatch the full event chain.
-  if (nm) {
-    await page.evaluate(({ n, id }) => {
-      const inputs = [...document.querySelectorAll(`input[name="${CSS.escape(n)}"]`)];
-      const el = inputs.find(i => i.id === id) || inputs[0];
-      if (!el) return;
-      const lbl = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
-      el.checked = true;
-      if (lbl) { try { lbl.click(); } catch {} }
-      for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'input', 'change']) el.dispatchEvent(new MouseEvent(t, { bubbles: true }));
-    }, { n: nm, id: snap.id }).catch(() => {});
-    await new Promise(r => setTimeout(r, 300));
-  }
+  // 3) JS fallback: locate the input by name (or by fieldset+label text), click its label and
+  //    dispatch the full event chain so React registers it.
+  await page.evaluate(({ n, id, gi, txt }) => {
+    let el = null;
+    if (n) { const inputs = [...document.querySelectorAll(`input[name="${CSS.escape(n)}"]`)]; el = inputs.find(i => i.id === id) || inputs[0]; }
+    if (!el && gi >= 0) {
+      const fs = [...document.querySelectorAll('fieldset, [role="group"], [role="radiogroup"]')][gi];
+      if (fs) {
+        const inputs = [...fs.querySelectorAll('input[type="radio"], input[type="checkbox"]')];
+        // choose the input whose label text matches the option, else by id
+        el = inputs.find(i => { const l = i.id ? document.querySelector(`label[for="${CSS.escape(i.id)}"]`) : null; return l && new RegExp(`^\\s*${(txt||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\s*$`, 'i').test(l.textContent || ''); }) || inputs.find(i => i.id === id) || inputs[0];
+      }
+    }
+    if (!el) return;
+    const lbl = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+    el.checked = true;
+    if (lbl) { try { lbl.click(); } catch {} }
+    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'input', 'change']) el.dispatchEvent(new MouseEvent(t, { bubbles: true }));
+  }, { n: nm, id: snap.id, gi: grpIdx, txt: optText || '' }).catch(() => {});
+  await new Promise(r => setTimeout(r, 300));
   return groupChecked();
 }
 
@@ -311,7 +318,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
     // Map the picked label to the specific input in the group, then check it robustly.
     const pickIdx = effLabels.findIndex(l => l.toLowerCase() === pick.toLowerCase());
     const targetField = pickIdx >= 0 ? g[pickIdx] : g.find(x => (x.optLabel || '').toLowerCase() === pick.toLowerCase()) || g[0];
-    const okRadio = await checkOption(page, targetField.id, pick, targetField.name || g[0].name);
+    const okRadio = await checkOption(page, targetField.id, pick, targetField.name || g[0].name, targetField.grpIdx != null ? targetField.grpIdx : g[0].grpIdx);
     if (process.env.DEBUG_EA) console.log('  radio checked:', okRadio, 'pickIdx', pickIdx);
     if (okRadio) ctx.used.push(g[0].q);
     else if (!isOptionalConsent(g[0].q)) { ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); }
@@ -348,7 +355,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
     for (const pick of picks) {
       const idx = labels.findIndex(l => l.toLowerCase() === String(pick).toLowerCase());
       const target = idx >= 0 ? g[idx] : (g.find(x => (x.optLabel || '').toLowerCase() === String(pick).toLowerCase()) || g[0]);
-      const ok = await checkOption(page, target.id, String(pick), target.name || g[0].name);
+      const ok = await checkOption(page, target.id, String(pick), target.name || g[0].name, target.grpIdx != null ? target.grpIdx : g[0].grpIdx);
       anyChecked = anyChecked || ok;
     }
     if (anyChecked) ctx.used.push(question);
