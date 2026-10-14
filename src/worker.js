@@ -129,17 +129,17 @@ function locationAllowed(job) {
   // 2. Explicit Pakistan location
   if (location.includes('pakistan') || PK_CITIES.test(location)) return true;
 
-  // 3. LinkedIn posts/easy — targeted via Pakistan queries; allow if desc mentions Pakistan
-  //    or if location is blank (Pakistan-query results won't have a location field)
+  // 3. LinkedIn posts/easy — must have a Pakistan signal in location OR description.
+  //    A blank location with no Pakistan mention could be a global post → reject it.
   if (/^linkedin/.test(source)) {
     if (location) return location.includes('pakistan') || PK_CITIES.test(location);
-    if (/pakistan|karachi|lahore|islamabad/.test(desc)) return true;
+    // blank location: only allow if the post text explicitly mentions Pakistan and is not geo-locked elsewhere
     if (GEO_LOCK_ACTION.test(desc)) return false;
-    return true; // blank-location LinkedIn post from a Pakistan query — allow
+    return /pakistan|karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|remote.{0,20}pakistan/.test(desc);
   }
 
-  // 4. Everything else must explicitly mention Pakistan in description
-  return /pakistan|karachi|lahore|islamabad/.test(desc);
+  // 4. Everything else must explicitly mention Pakistan (location or description)
+  return /pakistan|karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar/.test(desc);
 }
 
 // ── ingest helper ────────────────────────────────────────────────────────────
