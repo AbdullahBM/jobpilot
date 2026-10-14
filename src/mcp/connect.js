@@ -122,6 +122,10 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
             await SLEEP(600);
             usedNote = true;
           }
+          // No note textarea on this custom-invite page: the note is optional / not offered.
+          // Proceed note-less rather than looping until the (disabled) submit never enables —
+          // this was the dominant cause of encounter #20 (×48 "send button not found").
+          else if (process.env.DEBUG_CONN) console.log('custom-invite: no note textarea, sending note-less');
         }
       }
       if (dryRun) {
@@ -167,6 +171,33 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         await SLEEP(500);
       }
       if (!submitReady) {
+        // Last-resort recovery before giving up (was the #1 encounter, ×48):
+        // 1) JS-click any visible send/submit control even if Playwright couldn't confirm it enabled
+        //    (LinkedIn's obfuscated classes defeat the isEnabled() heuristic on note-less invites).
+        const jsClicked = await page.evaluate(() => {
+          const btns = [...document.querySelectorAll('button, input[type="submit"]')];
+          const target = btns.find(b => {
+            if (b.offsetParent === null) return false;
+            const txt = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
+            const isSend = /^send$|^submit$|send invitation|send without a note|send now/.test(txt) || b.type === 'submit';
+            return isSend;
+          });
+          if (target) { target.disabled = false; target.click(); return true; }
+          return false;
+        }).catch(() => false);
+        if (jsClicked) {
+          await SLEEP(3000);
+          const body = await page.locator('body').innerText().catch(() => '');
+          if (/weekly invitation limit|reached the weekly|you.?ve reached/i.test(body)) {
+            await page.close();
+            return { ok: false, result: 'limit', detail: 'LinkedIn weekly invitation limit reached' };
+          }
+          const pendingNow = !!(await mainCol(page, /^pending$/i)) || /invitation sent|pending/i.test(body.slice(0, 2000));
+          if (pendingNow) {
+            await page.close();
+            return { ok: true, result: usedNote ? 'connected' : 'connected_no_note', detail: 'invite sent via custom-invite JS fallback', note: usedNote ? note : '' };
+          }
+        }
         await encounter('connect', 'send button not found in invite dialog', { url: profileUrl, page });
         await page.close();
         return { ok: false, result: 'error', detail: 'send button not found on custom-invite page' };
