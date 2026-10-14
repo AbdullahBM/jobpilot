@@ -122,45 +122,60 @@ const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|countr
 const OPTIONAL_CONSENT = /allow(ing)?\b.*\bcontact|contact me about|marketing|promotional|newsletter|future (job )?opportunities|future roles|future positions|keep me (informed|updated)|stay in touch|follow (the )?company|receive (updates|communications|emails)|opt[- ]?in|subscribe|share my (profile|data|information)|talent (community|network|pool)|join .* talent/i;
 const isOptionalConsent = q => OPTIONAL_CONSENT.test(String(q || ''));
 
-// Robustly check a radio/checkbox whose <input> is a 0×0 element with a React-ephemeral id.
-// Strategy order (all resolved from the STABLE data-ja attribute so ids can't go stale):
-//   1) Playwright TRUSTED click on the input's <label for=id> (React honors real events) —
-//      located fresh each attempt via the input's current id.
-//   2) Playwright trusted click on the label matched by its visible option text.
-//   3) JS fallback: set checked + dispatch click/change/input.
-// Verifies el.checked after each and returns true once it sticks.
-async function checkOption(page, dataJa, optText) {
+// Robustly check a radio/checkbox whose <input> is a 0×0 element with a React-EPHEMERAL id that
+// gets DESTROYED and re-created on interaction (so any data-ja/id handle goes stale the instant
+// you click). Key insight: never verify via the old handle. We capture the input's group name +
+// current label id, click the label (trusted → mouse coords), then VERIFY FRESH by asking the
+// group whether an input is now checked. groupName/optText let us re-find the group after the
+// re-render. Returns true once the group shows a checked input.
+async function checkOption(page, dataJa, optText, groupName) {
   const loc = page.locator(`[data-ja="${dataJa}"]`);
-  const isChecked = async () => loc.evaluate(el => !!el.checked).catch(() => false);
-  if (await isChecked()) return true;
-  // 1) trusted click on the associated label (resolve its id live, then target by id)
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const curId = await loc.evaluate(el => el.id).catch(() => '');
-    if (curId) {
-      const lbl = page.locator(`label[for="${curId}"]`).first();
-      if (await lbl.count().catch(() => 0)) {
-        await lbl.scrollIntoViewIfNeeded().catch(() => {});
-        await lbl.click({ force: true, timeout: 2500 }).catch(() => {});
-        if (await isChecked()) return true;
-      }
+  // Snapshot the handle details BEFORE any click (the node may vanish after).
+  const snap = await loc.evaluate(el => ({ id: el.id, name: el.name, type: el.type })).catch(() => null);
+  if (!snap) return false;
+  const nm = groupName || snap.name || '';
+  // Is any input in this group already checked? (verified fresh, not via the stale node)
+  const groupChecked = async () => {
+    if (!nm) return loc.evaluate(el => !!el.checked).catch(() => false);
+    return page.evaluate(n => {
+      const inputs = [...document.querySelectorAll(`input[name="${CSS.escape(n)}"]`)];
+      return inputs.some(i => i.checked);
+    }, nm).catch(() => false);
+  };
+  if (await groupChecked()) return true;
+
+  const clickById = async () => {
+    const lbl = page.locator(`label[for="${snap.id}"]`).first();
+    if (await lbl.count().catch(() => 0)) {
+      await lbl.scrollIntoViewIfNeeded().catch(() => {});
+      const box = await lbl.boundingBox().catch(() => null);
+      await lbl.click({ force: true, timeout: 2000 }).catch(() => {});
+      // after re-render the label still clicks; also try a raw mouse click at its coords
+      if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
     }
-    // 2) trusted click on a label/option carrying the visible text
-    if (optText) {
-      const byText = page.locator('label, [role="checkbox"], [role="radio"]').filter({ hasText: new RegExp(`^\\s*${optText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
-      if (await byText.count().catch(() => 0)) { await byText.click({ force: true, timeout: 2500 }).catch(() => {}); if (await isChecked()) return true; }
-    }
+  };
+  // 1) click the label for the captured id, verify fresh.
+  await clickById(); await new Promise(r => setTimeout(r, 400));
+  if (await groupChecked()) return true;
+  // 2) click a label/option carrying the visible option text, verify fresh.
+  if (optText) {
+    const byText = page.locator(`label, [role="radio"], [role="checkbox"]`).filter({ hasText: new RegExp(`^\\s*${optText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
+    if (await byText.count().catch(() => 0)) { await byText.click({ force: true, timeout: 2000 }).catch(() => {}); await new Promise(r => setTimeout(r, 400)); if (await groupChecked()) return true; }
+  }
+  // 3) JS fallback by group name: set the right input checked + dispatch the full event chain.
+  if (nm) {
+    await page.evaluate(({ n, id }) => {
+      const inputs = [...document.querySelectorAll(`input[name="${CSS.escape(n)}"]`)];
+      const el = inputs.find(i => i.id === id) || inputs[0];
+      if (!el) return;
+      const lbl = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+      el.checked = true;
+      if (lbl) { try { lbl.click(); } catch {} }
+      for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'input', 'change']) el.dispatchEvent(new MouseEvent(t, { bubbles: true }));
+    }, { n: nm, id: snap.id }).catch(() => {});
     await new Promise(r => setTimeout(r, 300));
   }
-  // 3) JS fallback — set + dispatch the full event sequence React listens for.
-  await loc.evaluate(el => {
-    const root = el.getRootNode();
-    const lbl = el.id ? root.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
-    el.checked = true;
-    if (lbl) { try { lbl.click(); } catch {} }
-    try { el.click(); } catch {}
-    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'input', 'change']) el.dispatchEvent(new Event(t, { bubbles: true }));
-  }).catch(() => {});
-  return isChecked();
+  return groupChecked();
 }
 
 // Look up the AGENT's reasoned answer for a question (fuzzy, case-insensitive). Returns the
@@ -296,7 +311,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
     // Map the picked label to the specific input in the group, then check it robustly.
     const pickIdx = effLabels.findIndex(l => l.toLowerCase() === pick.toLowerCase());
     const targetField = pickIdx >= 0 ? g[pickIdx] : g.find(x => (x.optLabel || '').toLowerCase() === pick.toLowerCase()) || g[0];
-    const okRadio = await checkOption(page, targetField.id, pick);
+    const okRadio = await checkOption(page, targetField.id, pick, targetField.name || g[0].name);
     if (process.env.DEBUG_EA) console.log('  radio checked:', okRadio, 'pickIdx', pickIdx);
     if (okRadio) ctx.used.push(g[0].q);
     else if (!isOptionalConsent(g[0].q)) { ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); }
@@ -333,7 +348,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
     for (const pick of picks) {
       const idx = labels.findIndex(l => l.toLowerCase() === String(pick).toLowerCase());
       const target = idx >= 0 ? g[idx] : (g.find(x => (x.optLabel || '').toLowerCase() === String(pick).toLowerCase()) || g[0]);
-      const ok = await checkOption(page, target.id, String(pick));
+      const ok = await checkOption(page, target.id, String(pick), target.name || g[0].name);
       anyChecked = anyChecked || ok;
     }
     if (anyChecked) ctx.used.push(question);
