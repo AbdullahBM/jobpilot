@@ -5,6 +5,7 @@ import fs from 'fs';
 import { DATA, DB_FILE } from './config.js';
 import { assessJob, selectCvVariant } from './cv.js';
 import { getProfile } from './profile.js';
+import { isListedFakeEmail } from './fake-emails.js';
 
 fs.mkdirSync(DATA, { recursive: true });
 const require = createRequire(import.meta.url);
@@ -31,23 +32,14 @@ export const DONE_STATUSES = ['emailed', 'applied', 'connected', 'dm_sent', 'ski
 // Addresses that are never a hiring contact (aggregator footers, legal, bots).
 const BAD_EMAIL_RE = /(^|[._-])(no-?reply|donotreply|privacy|legal|abuse|security|support|help|billing|press|media|unsubscribe|notifications?|info@linkedin|gdpr|dpo|webmaster|postmaster|admin)@|@(tinyboards\.co|example\.|sentry\.|wix|.*\.png|.*\.jpg|linkedin\.com|weworkremotely\.com|remoteok\.com|remotive\.com|himalayas\.app|users\.noreply\.github\.com)|vaga-\d+@/i;
 // In-memory cache of the per-user learned fake-email set (populated from the fake_emails table on
-// init). Combined with the shipped code-level FAKE_EMAIL patterns so future brains skip known fakes.
+// init). Combined with src/fake-emails.txt so future brains skip known fakes.
 let _fakeSet = new Set();
-let _fakePatterns = null;
-function fakePatterns() {
-  if (_fakePatterns) return _fakePatterns;
-  try { // Shipped, contributable registry of known-fake/decoy address patterns (code, not data).
-    // Lazy require to avoid a hard dependency during early init.
-    _fakePatterns = require('./fake-emails.js').FAKE_EMAIL_PATTERNS || [];
-  } catch { _fakePatterns = []; }
-  return _fakePatterns;
-}
-/** True if the address is a KNOWN fake/decoy — learned (DB) or a shipped pattern. */
+/** True if the address is a KNOWN fake/decoy — learned (DB) or listed in fake-emails.txt. */
 export function isFakeEmail(e = '') {
   const addr = String(e || '').toLowerCase().trim();
   if (!addr) return false;
   if (_fakeSet.has(addr)) return true;
-  return fakePatterns().some(re => { try { return re.test(addr); } catch { return false; } });
+  return isListedFakeEmail(addr);
 }
 /** Record an address as fake so it is never contacted again (persisted + cached). Idempotent. */
 export function markFakeEmail(email, reason = '', source = '') {
