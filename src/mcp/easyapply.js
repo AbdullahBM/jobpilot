@@ -122,6 +122,47 @@ const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|countr
 const OPTIONAL_CONSENT = /allow(ing)?\b.*\bcontact|contact me about|marketing|promotional|newsletter|future (job )?opportunities|future roles|future positions|keep me (informed|updated)|stay in touch|follow (the )?company|receive (updates|communications|emails)|opt[- ]?in|subscribe|share my (profile|data|information)|talent (community|network|pool)|join .* talent/i;
 const isOptionalConsent = q => OPTIONAL_CONSENT.test(String(q || ''));
 
+// Robustly check a radio/checkbox whose <input> is a 0×0 element with a React-ephemeral id.
+// Strategy order (all resolved from the STABLE data-ja attribute so ids can't go stale):
+//   1) Playwright TRUSTED click on the input's <label for=id> (React honors real events) —
+//      located fresh each attempt via the input's current id.
+//   2) Playwright trusted click on the label matched by its visible option text.
+//   3) JS fallback: set checked + dispatch click/change/input.
+// Verifies el.checked after each and returns true once it sticks.
+async function checkOption(page, dataJa, optText) {
+  const loc = page.locator(`[data-ja="${dataJa}"]`);
+  const isChecked = async () => loc.evaluate(el => !!el.checked).catch(() => false);
+  if (await isChecked()) return true;
+  // 1) trusted click on the associated label (resolve its id live, then target by id)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const curId = await loc.evaluate(el => el.id).catch(() => '');
+    if (curId) {
+      const lbl = page.locator(`label[for="${curId}"]`).first();
+      if (await lbl.count().catch(() => 0)) {
+        await lbl.scrollIntoViewIfNeeded().catch(() => {});
+        await lbl.click({ force: true, timeout: 2500 }).catch(() => {});
+        if (await isChecked()) return true;
+      }
+    }
+    // 2) trusted click on a label/option carrying the visible text
+    if (optText) {
+      const byText = page.locator('label, [role="checkbox"], [role="radio"]').filter({ hasText: new RegExp(`^\\s*${optText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
+      if (await byText.count().catch(() => 0)) { await byText.click({ force: true, timeout: 2500 }).catch(() => {}); if (await isChecked()) return true; }
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  // 3) JS fallback — set + dispatch the full event sequence React listens for.
+  await loc.evaluate(el => {
+    const root = el.getRootNode();
+    const lbl = el.id ? root.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+    el.checked = true;
+    if (lbl) { try { lbl.click(); } catch {} }
+    try { el.click(); } catch {}
+    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'input', 'change']) el.dispatchEvent(new Event(t, { bubbles: true }));
+  }).catch(() => {});
+  return isChecked();
+}
+
 // Look up the AGENT's reasoned answer for a question (fuzzy, case-insensitive). Returns the
 // answer if the agent provided one for this field, else undefined so the caller falls back to
 // the built-in engine. This is what lets the agent reason over ANY form, not just known shapes.
@@ -252,28 +293,10 @@ async function fillPage(page, dlg, ctx, job = {}) {
       if (isOptionalConsent(g[0].q)) continue; // optional consent radio → don't block
       ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); continue;
     }
-    // Map the picked label to the specific input in the group.
+    // Map the picked label to the specific input in the group, then check it robustly.
     const pickIdx = effLabels.findIndex(l => l.toLowerCase() === pick.toLowerCase());
     const targetField = pickIdx >= 0 ? g[pickIdx] : g.find(x => (x.optLabel || '').toLowerCase() === pick.toLowerCase()) || g[0];
-    const loc = page.locator(`[data-ja="${targetField.id}"]`);
-    let okRadio = false;
-    // The <input> is 0×0 (unclickable) and its React id is ephemeral; resolve the real
-    // clickable <label for=id> from the STABLE data-ja input inside one evaluate, click it,
-    // force the input checked, and fire change/input so LinkedIn's form state advances.
-    okRadio = await loc.evaluate(el => {
-      const root = el.getRootNode();
-      const lbl = el.id ? root.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
-      if (lbl) { try { lbl.click(); } catch {} }
-      if (!el.checked) { el.checked = true; try { el.click(); } catch {} }
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      return !!el.checked;
-    }).catch(() => false);
-    // Fallback: role=radio wrapper (older UI).
-    if (!okRadio) {
-      const wrap = dlg.getByRole('radio', { name: g[0].q, exact: false }).filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
-      if (await wrap.count().catch(() => 0)) { await wrap.click({ timeout: 2500 }).catch(() => {}); okRadio = await wrap.getAttribute('aria-checked').then(v => v === 'true').catch(() => false); }
-    }
+    const okRadio = await checkOption(page, targetField.id, pick);
     if (process.env.DEBUG_EA) console.log('  radio checked:', okRadio, 'pickIdx', pickIdx);
     if (okRadio) ctx.used.push(g[0].q);
     else if (!isOptionalConsent(g[0].q)) { ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); }
@@ -310,17 +333,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
     for (const pick of picks) {
       const idx = labels.findIndex(l => l.toLowerCase() === String(pick).toLowerCase());
       const target = idx >= 0 ? g[idx] : (g.find(x => (x.optLabel || '').toLowerCase() === String(pick).toLowerCase()) || g[0]);
-      const loc = page.locator(`[data-ja="${target.id}"]`);
-      const ok = await loc.evaluate(el => {
-        const root = el.getRootNode();
-        const lbl = el.id ? root.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
-        if (lbl) { try { lbl.click(); } catch {} }
-        if (!el.checked) { el.checked = true; try { el.click(); } catch {} }
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        return !!el.checked;
-      }).catch(() => false);
-      if (!ok) { const wrap = dlg.locator('[role="checkbox"]').filter({ hasText: new RegExp(`^\\s*${String(pick).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first(); if (await wrap.count().catch(() => 0)) await wrap.click({ timeout: 2500 }).catch(() => {}); }
+      const ok = await checkOption(page, target.id, String(pick));
       anyChecked = anyChecked || ok;
     }
     if (anyChecked) ctx.used.push(question);
@@ -333,36 +346,48 @@ async function fillPage(page, dlg, ctx, job = {}) {
 // whole page: classify each field, decide the intended answer + why, and flag which required
 // fields are still unresolved. This produces a transparent plan the fill step and the
 // evolution memory can both use, instead of blind field-by-field pattern matching.
-async function analyzePage(dlg) {
-  const { fields, radioGroupOptions = {}, heading, errors = [] } = await dlg.evaluate(SCAN);
+async function analyzePage(dlg, ctx = {}) {
+  const { fields, radioGroupOptions = {}, groupByIdx = {}, heading, errors = [] } = await dlg.evaluate(SCAN);
   const p = getProfile();
   const plan = [];
-  // group radios/checkboxes by question so the analysis reflects real questions, not inputs
-  const radioByGroup = {}; for (const f of fields) if (f.type === 'radio') (radioByGroup[f.name || f.q] ||= []).push(f);
-  const seenRadio = new Set();
+  // group radios/checkboxes the SAME way fillPage does (name → fieldset grpIdx → question)
+  const groupKey = f => f.name || (f.grpIdx >= 0 ? `grp${f.grpIdx}` : f.q);
+  const radioByGroup = {}; for (const f of fields) if (f.type === 'radio') (radioByGroup[groupKey(f)] ||= []).push(f);
+  const cbByGroup = {}; for (const f of fields) if (f.type === 'checkbox') (cbByGroup[groupKey(f)] ||= []).push(f);
+  const seen = new Set();
 
   for (const f of fields) {
     if (f.type === 'hidden') continue;
-    const q = f.q || f.optLabel || f.name;
     let decision = null, reason = '', kind = f.type;
+    let q = f.q || f.optLabel || f.name;
 
     if (f.type === 'file') { decision = 'attach CV'; reason = 'resume upload'; }
-    else if (f.type === 'radio') {
-      const key = f.name || f.q; if (seenRadio.has(key)) continue; seenRadio.add(key);
-      const g = radioByGroup[key] || [f];
-      kind = `radio(${g.length})`;
-      const raw = g.map(r => (r.optLabel || '').trim());
-      const captured = radioGroupOptions[(g[0].q || '').slice(0, 120)];
-      const opts = raw.every(l => !l) ? (Array.isArray(captured) && captured.length === g.length ? captured : (g.length === 2 ? ['Yes', 'No'] : raw)) : raw;
-      const pick = choiceAnswer(g[0].q, opts);
-      decision = pick; reason = pick ? `matched option "${pick}" of [${opts.join(', ')}]` : (isOptionalConsent(g[0].q) ? 'optional consent — skip' : `NO MATCH in [${opts.join(', ')}]`);
+    else if (f.type === 'radio' || f.type === 'checkbox') {
+      const key = groupKey(f); if (seen.has(key)) continue; seen.add(key);
+      const g = (f.type === 'radio' ? radioByGroup : cbByGroup)[key] || [f];
+      if (f.type === 'checkbox' && g.length < 2) { // standalone consent checkbox
+        decision = isOptionalConsent(f.q) ? 'leave unchecked' : (f.required ? 'check' : 'skip'); reason = 'single checkbox'; q = f.q;
+      } else {
+        const gm = f.grpIdx >= 0 ? groupByIdx[f.grpIdx] : null;
+        q = ((gm && gm.question) || g[0].q || '').trim();
+        kind = `${f.type === 'radio' ? 'radio' : 'checkbox'}(${g.length})`;
+        const raw = g.map(r => (r.optLabel || '').trim());
+        const captured = (gm && gm.options?.length === g.length ? gm.options : null) || radioGroupOptions[(q || '').slice(0, 120)];
+        const opts = raw.every(l => !l) ? (Array.isArray(captured) && captured.length === g.length ? captured : (g.length === 2 ? ['Yes', 'No'] : raw)) : raw;
+        const already = g.some(c => c.checked);
+        const agent = agentAnswerFor(ctx, q);
+        const pick = agent !== undefined ? (Array.isArray(agent) ? agent.join(', ') : String(agent)) : choiceAnswer(q, opts.filter(Boolean));
+        const tzDefault = !pick && /time ?zone|able to work in|which of the following|regions?/i.test(q) ? (opts.find(o => /\bus\b|united states/i.test(o)) || opts.find(Boolean)) : null;
+        decision = already ? 'already selected' : (pick || tzDefault);
+        reason = already ? 'already selected' : (decision ? `pick "${decision}" of [${opts.join(', ')}]` : (isOptionalConsent(q) ? 'optional — skip' : `NO MATCH in [${opts.join(', ')}]`));
+      }
     }
-    else if (f.tag === 'SELECT') { const pick = choiceAnswer(f.q, (f.opts || []).slice(1)); decision = pick; reason = pick ? `select "${pick}"` : 'no select match'; }
-    else if (f.type === 'checkbox') { decision = isOptionalConsent(f.q) ? 'leave unchecked (consent)' : (f.required ? 'check (required)' : 'skip'); reason = 'checkbox'; }
+    else if (f.tag === 'SELECT') { q = f.q; const agent = agentAnswerFor(ctx, f.q); const pick = agent !== undefined ? agent : choiceAnswer(f.q, (f.opts || []).slice(1)); decision = pick; reason = pick ? `select "${pick}"` : 'no select match'; }
     else { // text / textarea / tel
       const isSalary = /salary|compensation|\bctc\b|were you making|desired (pay|salary)|current (pay|salary)/i.test(q);
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(q);
-      let v = textAnswer(q, { numeric });
+      const agent = agentAnswerFor(ctx, q);
+      let v = agent !== undefined ? (Array.isArray(agent) ? agent.join(', ') : String(agent)) : textAnswer(q, { numeric });
       if ((v == null || v === '') && /which country.*(reside|live|based)|country of residence/i.test(q)) v = p.country || 'Pakistan';
       decision = v; reason = v != null ? 'answered from profile/rules' + (f.maxlength ? ` (max ${f.maxlength})` : '') : (isOptionalConsent(q) ? 'optional — skip' : 'UNRESOLVED');
     }
@@ -464,8 +489,14 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
 
     let lastProgress = '', same = 0;
     for (let step = 0; step < 15 && Date.now() - t0 < timeoutMs; step++) {
+      // PER-STEP REASONING: analyze this page (what each field needs + why), fill, then
+      // re-analyze and re-fill once if required fields remain. The engine reasons at EVERY
+      // step of the Easy Apply, not only once or only when stuck.
+      await analyzePage(dlg, ctx).catch(() => null);
       await fillPage(page, dlg, ctx, job);
-      await SLEEP(500);
+      await SLEEP(400);
+      const recheck = await analyzePage(dlg, ctx).catch(() => null);
+      if (recheck && recheck.blocking.length) { await fillPage(page, dlg, ctx, job); await SLEEP(400); }
       const submit = dlg.getByRole('button', { name: /submit application/i }).first();
       if (await submit.isVisible().catch(() => false)) {
         if (dryRun) { await discard(page); await page.close(); return { ok: true, result: 'dry_run_ready', detail: `reached submit at step ${step}`, meta }; }
@@ -489,7 +520,7 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
         if (same >= 2) {
           // REASONING STEP: analyze the stuck page so we know exactly which required fields are
           // unresolved and why, and bake that into the encounter so the fix is obvious.
-          const analysis = await analyzePage(dlg).catch(() => null);
+          const analysis = await analyzePage(dlg, ctx).catch(() => null);
           if (analysis) {
             for (const b of analysis.blocking) { ctx.unanswered.add(b.q); }
             const summary = analysis.blocking.length
@@ -633,7 +664,7 @@ export async function applyEasyApplyWithAnswers({ url, answers = {}, timeoutMs =
       await next.click().catch(() => {});
       await SLEEP(1600);
       const st = await dlg.evaluate(SCAN).catch(() => ({ progress: '' }));
-      if (st.progress && st.progress === lastProgress) { if (++same >= 2) { const a = await analyzePage(dlg).catch(() => null); const blk = a ? a.blocking.map(b => `${b.q} (${b.reason})`).join(' | ') : ''; await discard(page); await page.close(); return { ok: false, result: 'stuck', detail: 'could not advance — ' + (blk || 'validation'), blocking: a?.blocking || [] }; } } else same = 0;
+      if (st.progress && st.progress === lastProgress) { if (++same >= 2) { const a = await analyzePage(dlg, ctx).catch(() => null); const blk = a ? a.blocking.map(b => `${b.q} (${b.reason})`).join(' | ') : ''; await discard(page); await page.close(); return { ok: false, result: 'stuck', detail: 'could not advance — ' + (blk || 'validation'), blocking: a?.blocking || [] }; } } else same = 0;
       lastProgress = st.progress;
     }
     await discard(page); await page.close().catch(() => {});
