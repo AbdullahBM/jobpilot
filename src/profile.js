@@ -86,6 +86,10 @@ const DEFAULT_PROFILE = {
   // Safety caps
   limits: {
     maxEmailsPerRun: 25,
+    // Email daily cap: 0 = UNLIMITED (default). Set a positive number to put a ceiling on how many
+    // application emails the agent sends per rolling 24h. Email via the user's Gmail carries no
+    // LinkedIn-restriction risk, so it is intentionally uncapped unless the user chooses otherwise.
+    maxEmailsPerDay: 0,
     maxAppliesPerRun: 15,
     maxAttemptsPerJob: 3,
     requestTimeoutMs: 30000,

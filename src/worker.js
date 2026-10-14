@@ -36,7 +36,18 @@ const DRY = process.env.DRY === '1';
 // The evolver (self-evolution/PR) lane is independent: it stays on unless WORKER_NO_EVOLVE=1.
 const DATA_ONLY = process.env.WORKER_DATA_ONLY === '1';
 const NO_EVOLVE = process.env.WORKER_NO_EVOLVE === '1';
-const DAILY = { email: 50, easy: 80, form: 30, connect: 18 };
+// Daily caps. Email is DELIBERATELY uncapped by default (0 = unlimited): emailing through the
+// user's Gmail carries no LinkedIn-restriction risk (only Gmail's own generous throttling), and
+// the user asked for the brain to decide pace, not a hardcoded number. The user can still set a
+// ceiling from the profile (limits.maxEmailsPerDay). Easy/form/connect keep account-safety caps.
+const DAILY = { email: 0, easy: 80, form: 30, connect: 18 };
+// Resolve the email daily cap from the profile at call time: 0, null, or absent → UNLIMITED.
+// A positive number is honored as a user-chosen ceiling. Non-numeric/garbage → unlimited.
+function emailDailyCap() {
+  const v = getProfile().limits?.maxEmailsPerDay;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;   // 0 = unlimited
+}
 // Relevance floors per channel. Lowered (per user request: "don't skip stuff") so fewer
 // borderline-but-real leads get dropped before we ever look at them — we'd rather see a
 // lead and let the CV/role guards decide than silently filter it out on a fuzzy score.
@@ -297,7 +308,9 @@ async function scout() {
 async function mailer() {
   while (running()) {
    try {
-    if (capLeft('email', 'email') <= 0) { beat('mailer', 'daily cap reached'); await SLEEP(10 * 60000); continue; }
+    // Email daily cap: 0/absent = UNLIMITED (default). Only enforce if the user set a positive ceiling.
+    const emailCap = emailDailyCap();
+    if (emailCap > 0 && doneToday('email') >= emailCap) { beat('mailer', `daily cap reached (${emailCap}, user-set)`); await SLEEP(10 * 60000); continue; }
     // If Gmail needs a login, don't hammer it — show the banner and wait, re-probing every ~3 min.
     if (loginBackoff('Gmail')) { beat('mailer', 'paused — waiting for you to log into Gmail'); await SLEEP(30000); continue; }
     const j = queue('email', 12).find(j => !alreadyEmailed(j.email) && !alreadyApplied(j.company, j.role));
