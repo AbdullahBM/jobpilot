@@ -154,6 +154,17 @@ const requiresWorkAuthorization = r => {
   // If the lead is anchored to a country the user IS authorized in (e.g. Pakistan), the
   // auth question is answerable — do not hard-skip. Only skip when it points elsewhere.
   if (auth.some(c => lc.includes(c))) return false;
+  // Relocation/visa-sponsorship preference: if the user is open to relocating AND the role offers
+  // sponsorship/relocation OR sits in a preferred region (Middle East / EU / …), it is DESIRABLE,
+  // not a wall — do not skip. The user explicitly wants these.
+  const prof = getProfile();
+  const prefLocs = (prof.preferences?.locations || []).map(s => String(s).toLowerCase());
+  const wantsRelo = prof.workAuth?.willingToRelocate === true || prefLocs.length > 0;
+  if (wantsRelo) {
+    const offersSponsor = /\b(visa sponsorship|sponsorship (available|provided|offered)|relocation (assistance|package|support|provided|offered)|will sponsor|we sponsor|work permit (provided|sponsored))\b/.test(lc);
+    const inPref = prefLocs.some(loc => loc && lc.includes(loc));
+    if (offersSponsor || inPref) return false;
+  }
   return true;
 };
 // Login backoff: once a site needs login, stop hammering it — surface the banner and only
