@@ -3,19 +3,34 @@
 // "Message sent" toast appeared — returns ok:false otherwise (so nothing is
 // recorded as sent unless it really was).
 import { getContext } from '../agent/browser.js';
+import { getProfile } from '../profile.js';
 import fs from 'fs';
 import path from 'path';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 
 export async function sendViaGmail({ to, subject, body, attachmentPath }) {
-  const ctx = await getContext();
-  const page = await ctx.newPage();
-  page.setDefaultTimeout(30000);
+  // Keep context/page creation INSIDE the try so a CDP/connect failure is CLASSIFIED as a
+  // transient error (retry later, attempt NOT burned) instead of throwing out of the function.
+  let page = null;
   try {
-    await page.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    const ctx = await getContext();
+    page = await ctx.newPage();
+    page.setDefaultTimeout(30000);
+    // Which logged-in Gmail account tab to drive: mail/u/<N>/. 0 = first/default account.
+    const idx = Number(getProfile().limits?.gmailAccountIndex) || 0;
+    await page.goto(`https://mail.google.com/mail/u/${idx}/#inbox`, { waitUntil: 'domcontentloaded', timeout: 40000 });
     await SLEEP(3000);
-    if (/accounts\.google\.com|ServiceLogin/.test(page.url())) return { ok: false, result: 'failed', detail: 'Gmail not logged in' };
+    // Distinguish a REAL logout from a transient accounts.google.com interstitial / account-chooser:
+    // reload once and re-check before declaring not-logged-in.
+    if (/accounts\.google\.com|ServiceLogin/.test(page.url())) {
+      await SLEEP(2500);
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+      await SLEEP(2500);
+      if (/accounts\.google\.com|ServiceLogin/.test(page.url())) {
+        return { ok: false, result: 'failed', detail: 'Gmail not logged in', transient: true };
+      }
+    }
 
     // Click the Compose button to open the compose window
     const composeBtn = page.getByRole('button', { name: /compose/i }).first()
@@ -93,8 +108,13 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
       ? { ok: true, result: 'sent', detail: `Sent to ${to}${attached ? ' with CV' : ''}` }
       : { ok: false, result: 'failed', detail: 'No "Message sent" confirmation' };
   } catch (e) {
-    return { ok: false, result: 'failed', detail: e.message.slice(0, 200) };
-  } finally { await page.close().catch(() => {}); }
+    // page === null means getContext()/newPage() itself failed → the debug Chrome / CDP endpoint
+    // is unavailable. Classify as transient so the mailer retries later WITHOUT burning an attempt
+    // and WITHOUT raising a false "Gmail not logged in" banner.
+    if (!page) return { ok: false, result: 'failed', detail: 'cdp_unavailable', transient: true };
+    // A failure after the page opened is a real send error — NOT transient.
+    return { ok: false, result: 'failed', detail: (e.message || '').slice(0, 200) };
+  } finally { if (page) await page.close().catch(() => {}); }
 }
 
 async function discardDraft(page, dlg) {
