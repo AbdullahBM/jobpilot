@@ -175,6 +175,35 @@ export function textAnswer(question, { numeric = false } = {}) {
     return derived;
   }
 
+  // Last resort for OPEN-ENDED free-text screening questions (non-numeric only).
+  // Rather than parking a genuine, relevant application as needs_answers because the
+  // question is open-ended ("how have you...", "describe...", "list the tools...",
+  // "experience with..."), generate a concise, profile-grounded answer. This is the
+  // single biggest reason target-role Easy Applies stalled instead of submitting.
+  if (!numeric && q.length > 10) {
+    const openEnded = /\b(describe|explain|how (have|did|do|would) you|tell us|list( all)?|what (tools|languages?|technologies|frameworks|platforms|software)|experience (with|in|building|scaling)|walk us through|give an example|elaborate|briefly|what is your|what are your|why )/.test(q);
+    if (openEnded) {
+      let v = null; let b = 'profile-grounded open-ended answer';
+      if (/\b(language|languages)\b/.test(q) && /proficien|speak|business/.test(q)) {
+        // Spoken/business languages, not programming.
+        v = ans(p, 'languages', '') || ans(p, 'spoken languages', '') || 'English (professional/fluent) and Urdu (native).';
+        b = 'spoken languages';
+      } else if (/\b(tools|software|platforms|technologies|frameworks|stack|tech)\b/.test(q)) {
+        v = `${(p.skills || []).join(', ')}.`.trim();
+        b = 'skills list from profile';
+      } else {
+        // General technical/behavioral prose grounded in skills + projects + summary.
+        v = coverText(p);
+        b = 'generated from CV/projects/summary';
+      }
+      if (v && String(v).trim()) {
+        v = String(v).slice(0, 1400);
+        recordAgentAnswer(question, v, b);
+        return v;
+      }
+    }
+  }
+
   return null;
 }
 
