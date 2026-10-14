@@ -23,12 +23,22 @@ function ans(p, key, dflt = '') {
 /** Approximate USD exchange rates for salary conversion. */
 const FX = { usd: 1, eur: 0.92, gbp: 0.79, pkr: 280, inr: 84, aed: 3.67, cad: 1.37 };
 
-const CURRENT_SALARY_RE = /\b(current|present|existing|currently\s+(earn|make)|current\s+(pay|salary|compensation))\b/;
+const CURRENT_SALARY_RE = /\b(current|present|existing|currently\s+(earn|make)|current\s+(pay|salary|compensation))\b|were you (making|earning|paid)|previous (role|job).*(salary|pay|making)|last drawn|present ctc/;
 
-function requestedCurrency(q, fallback = 'usd') {
-  return Object.keys(FX).find(c => q.includes(c))
-    || (/\$|dollar/.test(q) ? 'usd' : /€/.test(q) ? 'eur' : /£/.test(q) ? 'gbp'
-      : /rupee|\brs\b/.test(q) ? (fallback === 'inr' ? 'inr' : 'pkr') : fallback);
+// Detect the currency a salary question asks for. DEFAULT is PKR (the user's home market) —
+// only switch to another currency when the question explicitly names it (USD/$/dollar, etc.).
+// This is why a bare "What is your desired salary?" must map to PKR, not USD.
+function requestedCurrency(q, fallback = 'pkr') {
+  if (/\busd\b|us ?dollar|u\.s\. ?dollar|\$/.test(q)) return 'usd';
+  if (/€|\beur\b|euro/.test(q)) return 'eur';
+  if (/£|\bgbp\b|pound/.test(q)) return 'gbp';
+  if (/\binr\b|\brupees? \(india\)|indian rupee/.test(q)) return 'inr';
+  if (/\baed\b|dirham/.test(q)) return 'aed';
+  if (/\bcad\b|canadian/.test(q)) return 'cad';
+  const named = Object.keys(FX).find(c => new RegExp(`\\b${c}\\b`).test(q));
+  if (named) return named;
+  if (/\bpkr\b|rupee|\brs\b|pakistan/.test(q)) return 'pkr';
+  return fallback; // PKR by default
 }
 
 function requestedPeriod(q, fallback = 'month') {
@@ -36,23 +46,40 @@ function requestedPeriod(q, fallback = 'month') {
     : /hour|hourly|\/hr/.test(q) ? 'hour' : fallback;
 }
 
+// Pick the salaryExpectations entry matching the requested currency; fall back to the PKR
+// entry, then any entry, then the legacy single salary. Returns the entry plus the resolved
+// currency so the caller never guesses.
 function salaryExpectation(p, q) {
+  const wantCurrent = CURRENT_SALARY_RE.test(q);
+  const cur = requestedCurrency(q, 'pkr');
   const entries = Array.isArray(p.salaryExpectations)
-    ? p.salaryExpectations.filter(x => x && (+x.min || +x.max)) : [];
-  const legacy = p.salary || {};
-  const current = p.currentSalary || {};
-  if (CURRENT_SALARY_RE.test(q)) return current.amount ? current : null;
-  if (!entries.length) return legacy.amount ? { ...legacy, min: legacy.amount, max: legacy.amount } : null;
+    ? p.salaryExpectations.filter(x => x && (+x.min || +x.max || +x.current || +x.amount)) : [];
 
-  const qCurrency = requestedCurrency(q, '');
-  const explicitCountry = entries.find(x => x.country && q.includes(String(x.country).toLowerCase()));
-  const currencyMatch = qCurrency && entries.find(x => String(x.currency || '').toLowerCase() === qCurrency);
-  const broad = entries.find(x => /world|global|anywhere|default/i.test(String(x.country || '')));
-  const selected = explicitCountry || currencyMatch || broad || entries[0];
+  // Prefer an entry whose currency matches the question's currency.
+  let selected = entries.find(x => String(x.currency || '').toLowerCase() === cur)
+    || entries.find(x => String(x.currency || '').toLowerCase() === 'pkr')
+    || entries[0];
+
+  // Fall back to the legacy single salary / currentSalary objects.
+  if (!selected) {
+    const legacy = p.salary || {};
+    const current = p.currentSalary || {};
+    const base = wantCurrent && current.amount ? current : legacy;
+    if (!base || !(base.amount || base.min)) return null;
+    selected = { currency: base.currency || 'pkr', period: base.period || 'month', min: +base.amount || +base.min || 0, max: +base.max || +base.amount || 0, current: +current.amount || +base.amount || 0 };
+  }
+
+  const period = selected.period || 'month';
+  const min = +selected.min || +selected.max || +selected.amount || 0;
+  const max = +selected.max || +selected.min || +selected.amount || 0;
+  const currentVal = +selected.current || +((p.currentSalary || {}).amount) || 0;
   return {
-    ...selected,
-    min: +selected.min || +selected.max || 0,
-    max: +selected.max || +selected.min || 0,
+    currency: String(selected.currency || cur || 'pkr').toLowerCase(),
+    period,
+    min, max,
+    // When the question asks for CURRENT pay, surface the current figure as the value.
+    value: wantCurrent ? (currentVal || min) : (min || currentVal),
+    isCurrent: wantCurrent,
   };
 }
 
@@ -72,37 +99,22 @@ function formatSalaryValue(value, currency, period) {
 export function salaryFor(q, p, numeric = false) {
   q = String(q || '').toLowerCase();
   const s = salaryExpectation(p, q);
-  if (!s) {
-    const fallback = CURRENT_SALARY_RE.test(q) ? ans(p, 'current salary', null) : ans(p, 'salary', null);
-    if (fallback) return fallback;
-    // For a REQUIRED numeric current-salary field with no current salary on file, fall back to
-    // the expected/desired figure (a sensible number) rather than null — null leaves the field
-    // blank and blocks the whole Easy Apply. Non-numeric fields can say "Negotiable".
-    if (numeric) {
-      const exp = salaryExpectation(p, 'expected salary');
-      if (exp) {
-        const baseCur = String(exp.currency || 'usd').toLowerCase();
-        const period = requestedPeriod(q, exp.period || 'month');
-        const toMonthly = v => (exp.period === 'year') ? v / 12 : (exp.period === 'hour') ? v * 160 : v;
-        const fromMonthly = v => period === 'year' ? v * 12 : period === 'hour' ? v / 160 : v;
-        const base = +exp.min || +exp.amount || +exp.max || 0;
-        if (base) return String(formatSalaryValue(fromMonthly(toMonthly(base)), baseCur, period));
-      }
-      return null;
-    }
-    return 'Negotiable';
-  }
-  const baseCur = String(s.currency || 'usd').toLowerCase();
-  const cur = requestedCurrency(q, baseCur);
+  if (!s) return numeric ? null : 'Negotiable';
+
+  const baseCur = s.currency;                 // currency the stored figure is in
+  const cur = requestedCurrency(q, 'pkr');     // currency the QUESTION wants (PKR default)
   const period = requestedPeriod(q, s.period || 'month');
   const basePeriod = s.period || 'month';
-  const toMonthly = value => basePeriod === 'year' ? value / 12 : basePeriod === 'hour' ? value * 160 : value;
-  const fromMonthly = value => period === 'year' ? value * 12 : period === 'hour' ? value / 160 : value;
-  const convert = value => formatSalaryValue(fromMonthly(toMonthly(value) / (FX[baseCur] || 1) * (FX[cur] || 1)), cur, period);
-  const min = convert(+s.min || +s.amount || 0);
-  const max = convert(+s.max || +s.min || +s.amount || 0);
-  // Numeric form controls cannot represent a range; use the lower bound.
-  return numeric ? String(min) : min === max ? String(min) : `${min}-${max}`;
+  const toMonthly = v => basePeriod === 'year' ? v / 12 : basePeriod === 'hour' ? v * 160 : v;
+  const fromMonthly = v => period === 'year' ? v * 12 : period === 'hour' ? v / 160 : v;
+  // Convert from the stored currency to the requested currency via the USD table.
+  const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) / (FX[baseCur] || 1) * (FX[cur] || 1)), cur, period);
+
+  // Current-pay questions → single current figure. Expected → min (numeric) or min-max range.
+  if (s.isCurrent) return String(convert(s.value || s.min || 0));
+  const min = convert(s.min || s.value || 0);
+  const max = convert(s.max || s.min || 0);
+  return numeric ? String(min) : (min === max ? String(min) : `${min}-${max}`);
 }
 
 /**
@@ -133,6 +145,15 @@ export function textAnswer(question, { numeric = false } = {}) {
   if (yrsProfile && isGenericYears) {
     recordAgentAnswer(question, yrsProfile, 'yearsExperience from profile (generic years question)');
     return yrsProfile;
+  }
+
+  // 0b. SALARY/compensation questions: route straight to the deterministic, currency-aware
+  //     salaryFor() — the single source of truth — before any learned/profile-answer override
+  //     (those were storing verbose strings like "280,000 PKR/month (negotiable)" that don't
+  //     fit numeric fields or respect the question's currency).
+  if (/salary|compensation|\bctc\b|expected pay|pay expectation|remuneration|were you making|desired (pay|salary)|current (pay|salary)/.test(q)) {
+    const sal = salaryFor(question, p, numeric);
+    if (sal != null && sal !== '') { recordAgentAnswer(question, sal, 'currency-aware salaryFor'); return sal; }
   }
 
   // 1. Evolution memory (user-taught or harvested) — highest trust.

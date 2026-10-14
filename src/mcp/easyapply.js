@@ -261,6 +261,56 @@ async function fillPage(page, dlg, ctx, job = {}) {
   }
 }
 
+// ── REASONING / ANALYSIS STEP ─────────────────────────────────────────────────
+// Every LinkedIn Easy Apply form is different, so before (and after) filling we ANALYZE the
+// whole page: classify each field, decide the intended answer + why, and flag which required
+// fields are still unresolved. This produces a transparent plan the fill step and the
+// evolution memory can both use, instead of blind field-by-field pattern matching.
+async function analyzePage(dlg) {
+  const { fields, radioGroupOptions = {}, heading, errors = [] } = await dlg.evaluate(SCAN);
+  const p = getProfile();
+  const plan = [];
+  // group radios/checkboxes by question so the analysis reflects real questions, not inputs
+  const radioByGroup = {}; for (const f of fields) if (f.type === 'radio') (radioByGroup[f.name || f.q] ||= []).push(f);
+  const seenRadio = new Set();
+
+  for (const f of fields) {
+    if (f.type === 'hidden') continue;
+    const q = f.q || f.optLabel || f.name;
+    let decision = null, reason = '', kind = f.type;
+
+    if (f.type === 'file') { decision = 'attach CV'; reason = 'resume upload'; }
+    else if (f.type === 'radio') {
+      const key = f.name || f.q; if (seenRadio.has(key)) continue; seenRadio.add(key);
+      const g = radioByGroup[key] || [f];
+      kind = `radio(${g.length})`;
+      const raw = g.map(r => (r.optLabel || '').trim());
+      const captured = radioGroupOptions[(g[0].q || '').slice(0, 120)];
+      const opts = raw.every(l => !l) ? (Array.isArray(captured) && captured.length === g.length ? captured : (g.length === 2 ? ['Yes', 'No'] : raw)) : raw;
+      const pick = choiceAnswer(g[0].q, opts);
+      decision = pick; reason = pick ? `matched option "${pick}" of [${opts.join(', ')}]` : (isOptionalConsent(g[0].q) ? 'optional consent — skip' : `NO MATCH in [${opts.join(', ')}]`);
+    }
+    else if (f.tag === 'SELECT') { const pick = choiceAnswer(f.q, (f.opts || []).slice(1)); decision = pick; reason = pick ? `select "${pick}"` : 'no select match'; }
+    else if (f.type === 'checkbox') { decision = isOptionalConsent(f.q) ? 'leave unchecked (consent)' : (f.required ? 'check (required)' : 'skip'); reason = 'checkbox'; }
+    else { // text / textarea / tel
+      const isSalary = /salary|compensation|\bctc\b|were you making|desired (pay|salary)|current (pay|salary)/i.test(q);
+      const numeric = f.numeric || isSalary || /how many|years|number of/i.test(q);
+      let v = textAnswer(q, { numeric });
+      if ((v == null || v === '') && /which country.*(reside|live|based)|country of residence/i.test(q)) v = p.country || 'Pakistan';
+      decision = v; reason = v != null ? 'answered from profile/rules' + (f.maxlength ? ` (max ${f.maxlength})` : '') : (isOptionalConsent(q) ? 'optional — skip' : 'UNRESOLVED');
+    }
+    const resolved = decision != null && decision !== '' || /skip|optional/i.test(reason);
+    plan.push({ q: String(q).slice(0, 70), kind, required: !!f.required, decision: decision == null ? null : String(decision).slice(0, 50), reason, resolved });
+  }
+
+  const blocking = plan.filter(x => x.required && !x.resolved);
+  if (process.env.DEBUG_EA) {
+    console.log(`\n[ANALYZE] "${heading}" — ${plan.length} fields, ${blocking.length} blocking${errors.length ? ', errors: ' + errors.join(' | ') : ''}`);
+    for (const x of plan) console.log(`  ${x.resolved ? '✓' : '✗'} [${x.kind}${x.required ? '*' : ''}] ${x.q} => ${x.decision ?? '—'} (${x.reason})`);
+  }
+  return { heading, plan, blocking, errors };
+}
+
 async function discard(page) {
   await page.locator('dialog').getByRole('button', { name: /dismiss|close/i }).first().click({ timeout: 3000 }).catch(() => {});
   await SLEEP(800);
@@ -370,7 +420,20 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
         // a validation error usually means a numeric field got text, or a choice we didn't pick
         for (const f of st.fields.filter(f => f.required && !f.val && !f.checked && f.type !== 'radio' && f.type !== 'checkbox')) { ctx.unanswered.add(f.q); askLater(f.q, f.opts?.slice(1) || []); }
         if (same >= 2) {
-          if (!ctx.unanswered.size) await encounter('easy_apply', `stuck on page "${st.heading}": ${st.errors.join(' | ')}`, { url, page, scope: dlg });
+          // REASONING STEP: analyze the stuck page so we know exactly which required fields are
+          // unresolved and why, and bake that into the encounter so the fix is obvious.
+          const analysis = await analyzePage(dlg).catch(() => null);
+          if (analysis) {
+            for (const b of analysis.blocking) { ctx.unanswered.add(b.q); }
+            const summary = analysis.blocking.length
+              ? 'blocking: ' + analysis.blocking.map(b => `${b.q} [${b.kind}] (${b.reason})`).join(' | ')
+              : (analysis.errors.join(' | ') || 'all fields resolved but page would not advance');
+            if (!ctx.unanswered.size || !analysis.blocking.length) {
+              await encounter('easy_apply', `stuck on "${analysis.heading}": ${summary}`.slice(0, 580), { url, page, scope: dlg });
+            }
+          } else if (!ctx.unanswered.size) {
+            await encounter('easy_apply', `stuck on page "${st.heading}": ${st.errors.join(' | ')}`, { url, page, scope: dlg });
+          }
           break;
         }
       } else same = 0;
