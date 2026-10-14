@@ -87,7 +87,9 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         // normal invitation; a connection request should not fail just because
         // an optional note is unavailable.
         const premiumText = await page.locator('body').innerText().catch(() => '');
-        if (/out of free custom notes|send unlimited personalized invites|restart premium/i.test(premiumText)) {
+        const premiumCopy = page.getByText(/out of free custom notes|send unlimited personalized invites|restart premium/i).first();
+        const premiumVisible = await premiumCopy.isVisible().catch(() => false);
+        if (premiumVisible || /out of free custom notes|send unlimited personalized invites|restart premium/i.test(premiumText)) {
           usedNote = false;
           const dismiss = page.getByRole('button', { name: /dismiss|close/i }).last();
           await dismiss.click({ timeout: 2500 }).catch(() => page.keyboard.press('Escape').catch(() => {}));
