@@ -55,15 +55,38 @@ const SCAN = (dlg) => {
       opts: el.tagName === 'SELECT' ? [...el.options].map(o => o.text.trim()) : undefined,
       required: el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(q),
       numeric: el.type === 'number' || /numeric/i.test(el.id) || el.getAttribute('inputmode') === 'numeric',
+      maxlength: (() => { const m = parseInt(el.getAttribute('maxlength')); return Number.isFinite(m) && m > 0 ? m : 0; })(),
     });
   }
+  // For radio groups whose option labels are not on the inputs (2026 LinkedIn), capture the
+  // ordered list of visible option texts that follow each question heading, so multi-option
+  // radios (e.g. English: Native/Fluent, Advanced, …) can be matched by position.
+  const radioGroupOptions = {};
+  try {
+    for (const fsEl of dlg.querySelectorAll('fieldset, [role="group"], [role="radiogroup"]')) {
+      const inputs = fsEl.querySelectorAll('input[type="radio"]');
+      if (inputs.length < 2) continue;
+      const q = (inputs[0].getAttribute('aria-label') || fsEl.querySelector('legend')?.innerText || '').replace(/\s+/g, ' ').trim();
+      if (!q) continue;
+      // Option texts: 2026 LinkedIn renders them as bare text nodes/lines inside the fieldset
+      // (not in <label>/<span> with innerText). Parse the fieldset's innerText into lines,
+      // drop the question line and empties, and keep the first N lines = the ordered options.
+      const qNorm = q.replace(/\s+/g, ' ').trim().toLowerCase().replace(/\*+$/, '').trim();
+      const lines = (fsEl.innerText || '').split('\n').map(s => s.trim())
+        .filter(s => s && s.length < 40 && s.replace(/\*+$/, '').trim().toLowerCase() !== qNorm);
+      // also try explicit label/span texts as a fallback source
+      const nodeTexts = [...fsEl.querySelectorAll('label, span')].map(e => (e.innerText || '').trim()).filter(t => t && t.length < 40 && t.toLowerCase() !== qNorm);
+      const uniq = [...new Set([...lines, ...nodeTexts])];
+      if (uniq.length >= inputs.length) radioGroupOptions[q.slice(0, 120)] = uniq.slice(0, inputs.length);
+    }
+  } catch {}
   const errors = [...dlg.querySelectorAll('[role="alert"], [aria-live], .artdeco-inline-feedback--error')]
     .map(e => e.innerText.trim()).filter(t => t && /required|valid|enter|select|must|between|larger|smaller|whole number|decimal/i.test(t));
   const text = dlg.innerText.replace(/\s+/g, ' ');
   // LinkedIn alternates between "1/6 pages", "16%", and
   // "16 percent complete". Keep all forms so a validation-blocked page is
   // recognized as unchanged and its missing required fields can be surfaced.
-  return { fields: out, errors, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%|(\d+)\s+percent\s+complete/i) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
+  return { fields: out, errors, radioGroupOptions, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%|(\d+)\s+percent\s+complete/i) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
 };
 
 const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|country code|phone country code)/i;
@@ -76,7 +99,7 @@ const OPTIONAL_CONSENT = /allow(ing)?\b.*\bcontact|contact me about|marketing|pr
 const isOptionalConsent = q => OPTIONAL_CONSENT.test(String(q || ''));
 
 async function fillPage(page, dlg, ctx, job = {}) {
-  const { fields } = await dlg.evaluate(SCAN);
+  const { fields, radioGroupOptions = {} } = await dlg.evaluate(SCAN);
   const p = getProfile();
   const cvPath = cvAttachmentForJob(job, p);
   const groups = {};
@@ -119,16 +142,30 @@ async function fillPage(page, dlg, ctx, job = {}) {
       // Salary/compensation fields: LinkedIn renders them type=text but silently rejects
       // non-numeric input (e.g. "Negotiable"), which blocks "Review" with no visible error.
       // Force a numeric answer for anything salary-shaped so the page can advance.
-      const isSalary = /salary|compensation|\bctc\b|expected pay|pay expectation|remuneration|\brate\b/i.test(f.q);
+      const isSalary = /salary|compensation|\bctc\b|expected pay|pay expectation|remuneration|\brate\b|were you making/i.test(f.q);
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(f.q);
       let v = textAnswer(f.q, { numeric });
-      // If a salary field still came back non-numeric, coerce to the expected figure's digits.
+      // Country-of-residence questions: answer with the profile's country.
+      if ((v == null || v === '') && /which country.*(reside|live|based)|country.*(you.*(reside|live)|of residence)|where.*(do you )?(reside|live)/i.test(f.q)) {
+        v = p.country || (p.location || '').split(',').pop()?.trim() || 'Pakistan';
+      }
+      // Salary fields: LinkedIn renders them type=text but silently rejects non-numeric input
+      // (e.g. "Negotiable"), blocking Review with no error. Force clean numeric digits, and
+      // convert to USD when the field explicitly asks for USD.
       if (isSalary && (v == null || isNaN(parseFloat(String(v).replace(/[,\s]/g, ''))))) {
-        const sal = salaryFor(f.q, getProfile(), true);
+        const wantUsd = /\busd\b|us ?dollar|\$/i.test(f.q);
+        const sal = salaryFor(wantUsd ? f.q + ' usd' : f.q, getProfile(), true);
         v = sal != null ? String(sal).replace(/[^\d]/g, '') : v;
       }
       if (v == null || v === '') { if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q); } continue; }
-      await loc.fill(String(v));
+      // Respect the field's maxlength so a long cover-style answer isn't silently rejected
+      // (e.g. a 20-char "experience" field). Truncate cleanly to fit.
+      let fillVal = String(v);
+      if (f.maxlength && fillVal.length > f.maxlength) {
+        // For tiny limits a yes/short token is better than a truncated sentence.
+        fillVal = f.maxlength <= 10 ? (/\byes\b/i.test(fillVal) ? 'Yes' : fillVal.slice(0, f.maxlength)) : fillVal.slice(0, f.maxlength);
+      }
+      await loc.fill(fillVal);
       ctx.used.push(f.q);
       if (f.role === 'combobox' || /city|location/i.test(f.q)) {
         await SLEEP(1200);
@@ -144,13 +181,19 @@ async function fillPage(page, dlg, ctx, job = {}) {
     const learnable = g[0].q.length > 8 && !/^radio-group/.test(g[0].q);
     const checked = g.find(r => r.checked);
     if (checked) { if (learnable && checked.optLabel) learn(g[0].q, checked.optLabel, 'harvested'); continue; }
-    // 2026 LinkedIn renders yes/no screening radios as raw <input type=radio> with EMPTY
-    // labels and NO role=radio wrapper — both inputs share the QUESTION as aria-label and the
-    // visible "Yes"/"No" text is absent from the DOM. The option can then only be inferred by
-    // ORDER (LinkedIn convention: first = Yes, second = No). Build effective labels accordingly.
+    // 2026 LinkedIn renders screening radios as raw <input type=radio> with EMPTY labels and
+    // no role=radio wrapper — every input shares the QUESTION as aria-label and the visible
+    // option text lives in sibling spans/labels. Resolve option labels by ORDER:
+    //   • prefer the ordered option-text list captured from the group (radioGroupOptions),
+    //   • else for a 2-option group assume LinkedIn's Yes/No convention,
+    //   • else fall back to whatever optLabels we have.
     const rawLabels = g.map(r => (r.optLabel || '').trim());
     const allEmpty = rawLabels.every(l => !l);
-    const effLabels = allEmpty && g.length === 2 ? ['Yes', 'No'] : rawLabels;
+    const captured = radioGroupOptions[(g[0].q || '').slice(0, 120)];
+    let effLabels;
+    if (allEmpty && Array.isArray(captured) && captured.length === g.length) effLabels = captured;
+    else if (allEmpty && g.length === 2) effLabels = ['Yes', 'No'];
+    else effLabels = rawLabels;
 
     const pick = choiceAnswer(g[0].q, effLabels);
     if (process.env.DEBUG_EA) console.log('RADIO', JSON.stringify({ q: g[0].q, raw: rawLabels, eff: effLabels, pick }));

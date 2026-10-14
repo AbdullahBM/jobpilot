@@ -213,10 +213,17 @@ export function textAnswer(question, { numeric = false } = {}) {
   // "experience with..."), generate a concise, profile-grounded answer. This is the
   // single biggest reason target-role Easy Applies stalled instead of submitting.
   if (!numeric && q.length > 10) {
-    const openEnded = /\b(describe|explain|how (have|did|do|would) you|tell us|list( all)?|what (tools|languages?|technologies|frameworks|platforms|software)|experience (with|in|building|scaling)|walk us through|give an example|elaborate|briefly|what is your|what are your|why )/.test(q);
+    // Yes/No-phrased questions rendered as FREE TEXT ("Have you built ...?", "Do you have
+    // experience ...?"): a plain "Yes" is correct and fits tight character limits. Checked
+    // BEFORE the open-ended gate so phrasings like "have you built" aren't missed.
+    if (/^(do|have|are|can|did|were|is|was) (you|your)\b/.test(q) && /\?|experience|worked|built|familiar|comfortable|able|ever/.test(q)) {
+      recordAgentAnswer(question, 'Yes', 'standard yes for yes/no-phrased free-text question');
+      return 'Yes';
+    }
+    const openEnded = /\b(describe|explain|how (have|did|do|would|many) you|tell us|list( all)?|what (other )?(tools|languages?|technologies|frameworks|platforms|software)|which (tools|languages?|technologies)|experience (with|in|building|scaling)|walk us through|give an example|elaborate|briefly|what is your|what are your|why )/.test(q);
     if (openEnded) {
       let v = null; let b = 'profile-grounded open-ended answer';
-      if (/\b(language|languages)\b/.test(q) && /proficien|speak|business/.test(q)) {
+      if (/\b(language|languages)\b/.test(q) && /proficien|speak|business|fluent|other/.test(q)) {
         // Spoken/business languages, not programming.
         v = ans(p, 'languages', '') || ans(p, 'spoken languages', '') || 'English (professional/fluent) and Urdu (native).';
         b = 'spoken languages';
