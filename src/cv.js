@@ -25,10 +25,10 @@ export const TARGET_ROLES = [
   'Platform Engineer', 'Cloud Infrastructure Engineer', 'Cloud Solution Architect',
 ];
 
-function roleAligned(text, profile) {
+function roleAligned(text, profile, checkScope = true) {
   const hay = norm(text);
   const title = String(text || '');
-  if (OUT_OF_SCOPE_ROLE.test(title)) return false;
+  if (checkScope && OUT_OF_SCOPE_ROLE.test(title)) return false;
   const roles = (profile.preferences?.roles?.length ? profile.preferences.roles : TARGET_ROLES);
   return roles.some(role => {
     const key = norm(role);
@@ -45,7 +45,12 @@ export function assessJob(job = {}, profile = {}) {
   const skillTerms = [...new Set((profile.skills || []).flatMap(words))];
   const matchedRoleTerms = roleTerms.filter(t => includesTerm(text, t));
   const matchedSkills = skillTerms.filter(t => includesTerm(text, t));
-  const roleMatch = roleAligned(title || text, profile);
+  const titleOutsideScope = OUT_OF_SCOPE_ROLE.test(title);
+  const titleHasRoleSignal = /\b(devops?|sre|site reliability|cloud|platform|infrastructure|solution architect|cloud architect)\b/i.test(title);
+  const roleMatch = !titleOutsideScope && (
+    roleAligned(title || text, profile) ||
+    (titleHasRoleSignal && roleAligned(`${title} ${job.description || job.postText || ''}`.slice(0, 1200), profile, false))
+  );
   const profileFacts = norm([
     ...(profile.skills || []), profile.summary, profile.extra,
     ...(profile.projects || []).flatMap(x => [x.name, x.blurb]),

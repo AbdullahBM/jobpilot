@@ -18,6 +18,11 @@ const outside = assessJob({ role: 'Frontend Developer', description: 'React Type
 assert.equal(outside.roleAligned, false);
 assert.equal(outside.tailoredEligible, false);
 assert.equal(assessJob({ role: 'AI Platform Engineer', description: 'Kubernetes' }, profile).roleAligned, false);
+const hashtagRole = assessJob({
+  role: '#DevOps #SeniorDevOpsEngineer',
+  description: 'Lead DevOps Engineer — AWS, Kubernetes, Terraform, CI/CD',
+}, { ...profile, preferences: { roles: ['DevOps Engineer'] } });
+assert.equal(hashtagRole.roleAligned, true);
 
 const gated = ensureTailoredCv({ role: 'Cloud Engineer', description: 'AWS Terraform Kubernetes' }, profile);
 assert.equal(gated.generated, false);
