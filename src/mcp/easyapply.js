@@ -9,7 +9,8 @@ import { getProfile } from '../profile.js';
 import { textAnswer, choiceAnswer, salaryFor } from './answers.js';
 import { learn, askLater, encounter } from '../evolve.js';
 import fs from 'fs';
-import { cvAttachmentForJob } from '../cv.js';
+import { cvAttachmentForJob, selectCvVariant } from '../cv.js';
+import { setFields } from '../tracker.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 const APPLIED_RE = /Application submitted|Applied \d+ (second|minute|hour|day)s? ago|You applied|application was sent/i;
@@ -229,6 +230,8 @@ function agentAnswerFor(ctx, question) {
 async function fillPage(page, dlg, ctx, job = {}) {
   const { fields, radioGroupOptions = {}, groupByIdx = {} } = await dlg.evaluate(SCAN);
   const p = getProfile();
+  const selection = selectCvVariant(job, p);
+  if (job.url) setFields(job.url, { selected_cv_id: selection.id, selected_cv_path: selection.path, selected_cv_reason: selection.reason });
   const cvPath = cvAttachmentForJob(job, p);
   const groups = {};
   for (const f of fields) if (f.type === 'radio') (groups[f.name || f.q] ||= []).push(f);

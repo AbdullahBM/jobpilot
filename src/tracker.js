@@ -3,7 +3,7 @@
 import { createRequire } from 'module';
 import fs from 'fs';
 import { DATA, DB_FILE } from './config.js';
-import { assessJob } from './cv.js';
+import { assessJob, selectCvVariant } from './cv.js';
 import { getProfile } from './profile.js';
 
 fs.mkdirSync(DATA, { recursive: true });
@@ -101,6 +101,9 @@ export async function initDB() {
     add('cv_missing_terms', "TEXT DEFAULT ''");
     add('tailor_status', "TEXT DEFAULT 'not_requested'");
     add('tailored_cv_path', "TEXT DEFAULT ''");
+    add('selected_cv_id', "TEXT DEFAULT 'main'");
+    add('selected_cv_path', "TEXT DEFAULT ''");
+    add('selected_cv_reason', "TEXT DEFAULT ''");
     save();
     const { initEvolve } = await import('./evolve.js');
     initEvolve();
@@ -141,18 +144,21 @@ export function upsertJobs(list) {
   for (const j of list) {
     if (!j.url) continue;
     const assessment = assessJob(j, getProfile());
+    const selection = selectCvVariant(j, getProfile());
     const email = j.email && !isBadEmail(j.email) ? j.email.toLowerCase() : '';
     db.run(
       `INSERT OR IGNORE INTO jobs (source,company,role,remote,location,salary,url,email,portal,status,
          channel,apply_url,poster_url,poster_name,posted_at,relevance,description,updated_at,
-         cv_match_percent,cv_drift_percent,cv_missing_terms,tailor_status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         cv_match_percent,cv_drift_percent,cv_missing_terms,tailor_status,
+         selected_cv_id,selected_cv_path,selected_cv_reason)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [j.source || '', j.company || '', j.role || '', j.remote ? 1 : 0, j.location || '', j.salary || '', j.url,
        email, j.portal || 'other', j.status || 'new', j.channel || '', j.applyUrl || j.apply_url || '',
        j.posterUrl || j.poster_url || '', j.posterName || j.poster_name || '', j.postedAt || j.posted_at || '',
        +j.relevance || 0, (j.description || j.postText || '').slice(0, 2000), nowIso(),
        assessment.matchPercent, assessment.driftPercent, assessment.missingTerms.join(', '),
-       assessment.tailoredEligible ? 'approval_required' : 'not_requested']
+       assessment.tailoredEligible ? 'approval_required' : 'not_requested',
+       selection.id, selection.path, selection.reason]
     );
     if (db.getRowsModified() > 0) { n++; continue; }
     db.run(
@@ -162,10 +168,12 @@ export function upsertJobs(list) {
          poster_url = CASE WHEN poster_url='' OR poster_url IS NULL THEN ? ELSE poster_url END,
          posted_at = CASE WHEN posted_at='' OR posted_at IS NULL THEN ? ELSE posted_at END,
          cv_match_percent=?, cv_drift_percent=?, cv_missing_terms=?,
-         tailor_status=CASE WHEN tailor_status='generated' THEN tailor_status ELSE ? END
+         tailor_status=CASE WHEN tailor_status='generated' THEN tailor_status ELSE ? END,
+         selected_cv_id=?, selected_cv_path=?, selected_cv_reason=?
        WHERE url=?`,
       [email, j.applyUrl || '', j.posterUrl || '', j.postedAt || '', assessment.matchPercent,
-       assessment.driftPercent, assessment.missingTerms.join(', '), assessment.tailoredEligible ? 'approval_required' : 'not_requested', j.url]);
+       assessment.driftPercent, assessment.missingTerms.join(', '), assessment.tailoredEligible ? 'approval_required' : 'not_requested',
+       selection.id, selection.path, selection.reason, j.url]);
   }
   save();
   return n;

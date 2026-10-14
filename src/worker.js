@@ -26,7 +26,7 @@ import { getProfile, isExcludedCompany } from './profile.js';
 import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf, encounter } from './evolve.js';
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
-import { assessJob, cvAttachmentForJob } from './cv.js';
+import { assessJob, cvAttachmentForJob, selectCvVariant } from './cv.js';
 import { getEasyApplyLimit, maybeRefreshEasyApplyLimit } from './limits.js';
 
 const DRY = process.env.DRY === '1';
@@ -206,6 +206,8 @@ function queue(channel, limit = 25) {
 }
 const capLeft = (k, type) => Math.max(0, DAILY[k] - doneToday(type));
 function jobCvAttachment(j, p) {
+  const selection = selectCvVariant(j, p);
+  if (j.url) setFields(j.url, { selected_cv_id: selection.id, selected_cv_path: selection.path, selected_cv_reason: selection.reason });
   const attachment = cvAttachmentForJob(j, p);
   if (attachment && attachment.includes(`${path.sep}tailored-cv${path.sep}`) && j.url) {
     setFields(j.url, { tailor_status: 'generated', tailored_cv_path: attachment });
