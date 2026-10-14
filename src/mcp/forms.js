@@ -11,6 +11,20 @@ import fs from 'fs';
 import { cvAttachmentForJob } from '../cv.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
+
+// intl-tel-input leaves its country list open (role=dialog) after a phone fill, and cookie
+// bars sit on the submit button. Either one swallows the click, so the form never confirms.
+async function closeBlockingOverlays(page) {
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.evaluate(() => {
+    document.querySelectorAll('.iti__country-selector, .iti--container').forEach(el => el.classList.add('iti__hide'));
+    const ae = document.activeElement;
+    if (ae && ae !== document.body) ae.blur();
+  }).catch(() => {});
+  const cookie = page.getByRole('button', { name: /^(accept all|decline all|accept cookies|allow all cookies|allow all|reject all|i agree|got it)$/i }).first();
+  if (await cookie.isVisible().catch(() => false)) await cookie.click({ timeout: 2000 }).catch(() => {});
+  await SLEEP(300);
+}
 const CONFIRM_RE = /thank(s| you) for (applying|your (application|interest))|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)|your application is (complete|submitted|received)|application submitted|applied successfully|you('ve| have) applied|congrat|we will be in touch|we.?ll be in touch|check your email.*application/i;
 
 const SCAN = () => {
@@ -361,6 +375,7 @@ async function fillAll(page, unknown, job = {}) {
       if ((v == null || v === '') && f.tag === 'TEXTAREA') v = coverText(p);
       if (v == null || v === '') { if (f.required) unknown.add(f.q); continue; }
       await loc.fill(String(v));
+      if (/phone|mobile/i.test(f.q)) await page.keyboard.press('Escape').catch(() => {});
       if (/location|city/i.test(f.q)) { await SLEEP(1200); const o = page.locator('[role="option"], .pac-item').first(); if (await o.isVisible().catch(() => false)) await o.click().catch(() => {}); }
     } catch {}
   }
@@ -450,6 +465,8 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true, job = 
     const missing = still.map(f => f.q).filter(Boolean);
     if (missing.length) { missing.forEach(q => askLater(q)); return { ok: false, result: 'needs_manual', detail: 'unknown required: ' + missing.slice(0, 4).join(' | ').slice(0, 300), questions: missing, finalUrl }; }
     if (!submit) return { ok: true, result: 'dry_run_ready', detail: `filled ${n} fields`, finalUrl };
+
+    await closeBlockingOverlays(page);
 
     // Prefer an explicit submit control (Workable's `[data-ui="apply-button"]`, Greenhouse/Lever
     // `button[type=submit]`) before falling back to the generic accessible-name match. The
