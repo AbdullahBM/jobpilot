@@ -4,8 +4,6 @@
 // The CLIENT's LLM is the brain; this server is the hands + memory.
 //
 // Run:  node mcp-server.js   (stdio transport)
-import fs from 'fs';
-import path from 'path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -242,6 +240,27 @@ const TOOLS = [
       }));
     },
   },
+  {
+    name: 'easyapply_inspect',
+    description: "Open a LinkedIn Easy Apply and return the FULL ordered field list across ALL pages WITHOUT submitting — each {question, type (text|long-text|single-choice|multi-choice|select|file), options, maxlength, required, page}. Use this to READ an unfamiliar form so YOU reason over every question with the user's CV + profile, then answer via easyapply_apply_with_answers. Every form differs: inspect first, think, then fill.",
+    inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+    handler: async ({ url }) => ok(await inspectEasyApply({ url })),
+  },
+  {
+    name: 'easyapply_apply_with_answers',
+    description: "Submit a LinkedIn Easy Apply using YOUR reasoned answers. `answers` maps each question's text (from easyapply_inspect) to your answer: a string for text/select/single-choice, an array (or comma string) for multi-choice (e.g. timezones — pick any; the user can work any). Omissions fall back to the built-in engine. Fills radios/checkboxes/selects/text robustly (handles 2026 empty-label 0x0 inputs), advances every page, submits, verifies. result: applied|stuck|already_applied|no_easy_apply|closed|error. On stuck it returns the blocking fields so you can refine and retry.",
+    inputSchema: { type: 'object', properties: { url: { type: 'string' }, answers: { type: 'object' }, dryRun: { type: 'boolean' } }, required: ['url', 'answers'] },
+    handler: async ({ url, answers = {}, dryRun = false }) => {
+      const limit = getProfile().limits.maxAttemptsPerJob;
+      return ok(await timed('easyapply_apply_with_answers', url, { url }, limit, async () => {
+        const r = await applyEasyApplyWithAnswers({ url, answers, dryRun });
+        if (r.result === 'applied' || r.result === 'already_applied') setStatus(url, 'applied', r.detail);
+        writeDash();
+        return r;
+      }));
+    },
+  },
+
   {
     name: 'easyapply_inspect',
     description: "Open a LinkedIn Easy Apply and return the FULL ordered field list across ALL pages WITHOUT submitting — each {question, type (text|long-text|single-choice|multi-choice|select|file), options, maxlength, required, page}. Use this to READ an unfamiliar form so YOU reason over every question with the user's CV + profile, then answer via easyapply_apply_with_answers. Every form differs: inspect first, think, then fill.",
@@ -536,8 +555,10 @@ async function main() {
   // "never stop until the user stops you"). Writing the stop flag on exit/SIGINT/SIGTERM/stdin-end
   // killed the background worker on every MCP disconnect — the recurring "worker stops instead of
   // looping" bug (issues #20 / #109). Only an EXPLICIT user Stop (dashboard ⏹ / `npm run stop`)
-  // should write data/.stop. So we register no stop-on-disconnect hooks here.
-  // (Fix harvested from PR #117 — @Huzaifa-ali.)
+  // should write data/.stop. We register no stop-on-disconnect hooks; just exit cleanly.
+  process.on('SIGINT',  () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
+  process.stdin.on('end', () => { setTimeout(() => process.exit(0), 1500); });
 }
 
 main().catch(e => { console.error('FATAL:', e); process.exit(1); });
