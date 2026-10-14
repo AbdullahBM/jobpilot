@@ -22,7 +22,7 @@ import { subject as mkSubject, body as mkBody } from './scraper/email_content.js
 import { writeDash } from './dashboard.js';
 import { startServer } from './server.js';
 import { getProfile, isExcludedCompany } from './profile.js';
-import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf } from './evolve.js';
+import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf, encounter } from './evolve.js';
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
 import { assessJob, cvAttachmentForJob } from './cv.js';
@@ -247,19 +247,22 @@ async function scout() {
         if (!running()) break;
       } else { beat('scout', 'LinkedIn paused — waiting for you to log in'); }
 
-      // 2) The wider internet — HN, public boards — EVERY loop (unbiased variety,
-      //    no LinkedIn dependence, mostly email/form leads). Rotate one web source per loop
-      //    so we cover all of them quickly without hammering any single site.
-      //    Reddit is intentionally excluded (per user request): its bot-check/redirect
-      //    flow is noisy and low-yield, so we skip it entirely.
+      // 2) The wider internet — HN, public boards — run ALL of them EVERY loop (unbiased variety,
+      //    no LinkedIn dependence, mostly email/form leads). This keeps email/form leads flowing
+      //    even while LinkedIn is cooling/paused, so the email channel never starves.
+      //    Reddit is intentionally excluded by default (per user request): its bot-check/redirect
+      //    flow is noisy and low-yield. Un-starvation comes from HN/Boards getting more turns,
+      //    never from re-enabling Reddit.
       const web = [
         ['HN', () => hnHiring({ maxAgeHours: 240 })],
         ['Boards', () => publicBoards({ maxAgeHours: 72 })],
       ];
-      const [wname, wfn] = web[i % web.length];
-      beat('scout', 'web: ' + wname);
-      try { const rr = await wfn(); const { n, email } = ingest(rr.leads); say('scout', `${wname} +${n} (${email} email)`); } catch (e) { say('scout', `${wname} err ${e.message.slice(0, 60)}`); }
-      await jitter(PACE.scout);
+      for (const [wname, wfn] of web) {
+        beat('scout', 'web: ' + wname);
+        try { const rr = await wfn(); const { n, email } = ingest(rr.leads); say('scout', `${wname} +${n} (${email} email)`); } catch (e) { say('scout', `${wname} err ${e.message.slice(0, 60)}`); }
+        await jitter(PACE.scout);
+        if (!running()) break;
+      }
       if (!running()) break;
 
       // 3) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
@@ -298,11 +301,34 @@ async function mailer() {
     beat('mailer', `emailing ${j.email}`);
     // Dry runs must be observational: do not consume attempts or mark a lead as sent.
     if (DRY) { say('mailer', `DRY → ${j.email}`); await jitter(emailPaceRange()); continue; }
+    // An attempt is consumed ONLY on a genuine send attempt (see below) — never on a thrown
+    // CDP/connect error or a transient not-logged-in interstitial, which should just retry later.
+    let r;
+    try {
+      r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: jobCvAttachment(j, p) });
+    } catch (e) {
+      // thrown connect/unexpected error → transient: retry later, do NOT burn an attempt, no banner
+      say('mailer', `transient send error (will retry): ${((e && e.message) || e || '').toString().slice(0, 80)}`);
+      await jitter(emailPaceRange());
+      continue;
+    }
+    // transient classified failure (cdp_unavailable, or interstitial not-logged-in): retry, no attempt burn
+    if (r && r.transient) {
+      if (notLoggedIn(r.detail)) flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do');
+      say('mailer', `transient (${r.detail}) — will retry, attempt not consumed`);
+      await jitter(emailPaceRange());
+      continue;
+    }
+    // genuine send outcome → NOW consume the attempt, and re-read it so the cap arithmetic is correct.
     bumpAttempt(j.url);
-    const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: jobCvAttachment(j, p) });
+    const attempts = (getJob(j.url)?.attempts) || ((j.attempts || 0) + 1);
     if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
-    else if (notLoggedIn(r.detail)) { flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do'); continue; }
-    else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
+    else {
+      // Record an email-area encounter on a REAL send failure (page-less — gmail.js owns its page),
+      // mirroring how the applier/forms/connect lanes call the encounter recorder.
+      await encounter('email', `send failed: ${r.detail || 'unknown'}`, { url: j.url });
+      if (attempts >= (p.limits?.maxAttemptsPerJob || 3)) setStatus(j.url, 'failed', r.detail);
+    }
     log('email_send', j.company, j.role, j.email, r.ok ? 'ok' : 'fail', r.detail);
     outcome('email_domain', (j.email.split('@')[1] || ''), { win: r.ok });
     say('mailer', `${r.ok ? '✉ SENT' : '✗'} ${j.email} (${j.role} @ ${j.company})`);
@@ -539,6 +565,13 @@ async function evolver() {
 try { fs.rmSync(STOPFILE, { force: true }); } catch {}   // clear any stale stop flag
 try { await launchChrome(); } catch (e) { say('main', 'chrome launch issue (continuing): ' + (e.message || '').slice(0, 80)); }
 await initDB();
+// Self-heal: revive email leads frozen at the attempt cap by the pre-fix transient-attempt bug
+// (status still 'new' but attempts exhausted → never re-queued). Idempotent; code-only.
+try {
+  const { reviveStuckEmailLeads } = await import('./tracker.js');
+  const n = reviveStuckEmailLeads(getProfile().limits?.maxAttemptsPerJob || 3);
+  if (n) say('main', `revived ${n} email lead(s) stuck at the attempt cap (transient-fail self-heal)`);
+} catch {}
 // Keep the repo branch in sync with the main repo on startup (fork → rebase on upstream).
 if (!DRY && getProfile().consent?.autoContribute !== false) {
   try { const { syncBranch } = await import('./contribute.js'); const s = await syncBranch(); say('main', `branch sync: ${s.synced ? 'in sync with ' + (s.upstream || 'origin') : 'skipped (' + (s.reason || '') + ')'}`); } catch {}
