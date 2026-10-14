@@ -128,19 +128,22 @@ const isOptionalConsent = q => OPTIONAL_CONSENT.test(String(q || ''));
 // current label id, click the label (trusted → mouse coords), then VERIFY FRESH by asking the
 // group whether an input is now checked. groupName/optText let us re-find the group after the
 // re-render. Returns true once the group shows a checked input.
-async function checkOption(page, dataJa, optText, groupName) {
+async function checkOption(page, dataJa, optText, groupName, grpIdx = -1) {
   const loc = page.locator(`[data-ja="${dataJa}"]`);
   // Snapshot the handle details BEFORE any click (the node may vanish after).
   const snap = await loc.evaluate(el => ({ id: el.id, name: el.name, type: el.type })).catch(() => null);
   if (!snap) return false;
   const nm = groupName || snap.name || '';
-  // Is any input in this group already checked? (verified fresh, not via the stale node)
+  const gi = Number.isInteger(grpIdx) ? grpIdx : -1;
+  // Verify FRESH whether an input in this group is now checked — by name, else by the enclosing
+  // fieldset index (2026 nameless groups), never via the stale/destroyed node.
   const groupChecked = async () => {
-    if (!nm) return loc.evaluate(el => !!el.checked).catch(() => false);
-    return page.evaluate(n => {
-      const inputs = [...document.querySelectorAll(`input[name="${CSS.escape(n)}"]`)];
-      return inputs.some(i => i.checked);
-    }, nm).catch(() => false);
+    if (nm) return page.evaluate(n => [...document.querySelectorAll(`input[name="${CSS.escape(n)}"]`)].some(i => i.checked), nm).catch(() => false);
+    if (gi >= 0) return page.evaluate(idx => {
+      const fs = [...document.querySelectorAll('fieldset, [role="group"], [role="radiogroup"]')][idx];
+      return !!fs && [...fs.querySelectorAll('input[type="radio"], input[type="checkbox"]')].some(i => i.checked);
+    }, gi).catch(() => false);
+    return loc.evaluate(el => !!el.checked).catch(() => false);
   };
   if (await groupChecked()) return true;
 
@@ -180,7 +183,7 @@ async function checkOption(page, dataJa, optText, groupName) {
     el.checked = true;
     if (lbl) { try { lbl.click(); } catch {} }
     for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'input', 'change']) el.dispatchEvent(new MouseEvent(t, { bubbles: true }));
-  }, { n: nm, id: snap.id, gi: grpIdx, txt: optText || '' }).catch(() => {});
+  }, { n: nm, id: snap.id, gi, txt: optText || '' }).catch(() => {});
   await new Promise(r => setTimeout(r, 300));
   return groupChecked();
 }
