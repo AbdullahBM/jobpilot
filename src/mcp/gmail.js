@@ -18,32 +18,36 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
     if (/accounts\.google\.com|ServiceLogin/.test(page.url())) return { ok: false, result: 'failed', detail: 'Gmail not logged in' };
 
     // Click the Compose button to open the compose window
-    const composeBtn = page.getByRole('button', { name: /compose/i }).first()
-      .or(page.locator('[data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE').first());
-    await composeBtn.click({ timeout: 10000 }).catch(() => {});
-    await SLEEP(2500);
-
-    // The compose window — Gmail renders it as a table/div, NOT role="dialog" in all versions.
-    // Use a broad selector that works across Gmail UI variants.
-    const dlg = page.locator([
-      'div[role="dialog"]',
-      '.nH.Hd[tabindex="-1"]',          // classic Gmail compose wrapper
-      'div.AD',                           // newer Gmail compose panel
-      'div[aria-label*="New Message"]',
-      'div[aria-label*="New message"]',
-      'table.aoC',
-    ].join(', ')).filter({ has: page.locator('input[name="subjectbox"], input[aria-label*="Subject" i]') }).last();
-
-    // Wait generously — compose window can take a few seconds to fully mount.
-    await dlg.waitFor({ state: 'visible', timeout: 20000 }).catch(async () => {
-      // Fallback: just look for the subject input anywhere on the page
-    });
-
-    // Use the subject input as anchor — works whether or not the dialog wrapper matched.
+    // Open the composer. Gmail renders Compose as a DIV (role=button) with obfuscated classes,
+    // so a single selector is fragile. Try several strategies, then fall back to the Gmail
+    // keyboard shortcut "c", and retry until the subject input actually appears.
     const subjectInput = page.locator('input[name="subjectbox"]')
       .or(page.locator('input[aria-label*="Subject" i]')).first();
-    const subjectVisible = await subjectInput.isVisible().catch(() => false);
-    if (!subjectVisible) return { ok: false, result: 'failed', detail: 'Gmail compose window did not open' };
+
+    const composeIsOpen = async () => subjectInput.isVisible().catch(() => false);
+
+    const openComposer = async () => {
+      // Strategy 1: role=button named Compose (newer Gmail)
+      const byRole = page.getByRole('button', { name: /^compose$/i }).first();
+      if (await byRole.isVisible().catch(() => false)) { await byRole.click().catch(() => {}); return; }
+      // Strategy 2: the classic Compose button / its known containers / tooltip
+      const byLoc = page.locator('[gh="cm"], div[role="button"][gh="cm"], [data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE.L3, .T-I-KE').first();
+      if (await byLoc.isVisible().catch(() => false)) { await byLoc.click().catch(() => {}); return; }
+      // Strategy 3: any clickable element whose visible text is exactly "Compose"
+      const byText = page.getByText(/^compose$/i).first();
+      if (await byText.isVisible().catch(() => false)) { await byText.click().catch(() => {}); return; }
+      // Strategy 4: Gmail keyboard shortcut — "c" opens a new compose window.
+      await page.locator('body').click({ position: { x: 5, y: 300 } }).catch(() => {});
+      await page.keyboard.press('c').catch(() => {});
+    };
+
+    let opened = false;
+    for (let attempt = 0; attempt < 4 && !opened; attempt++) {
+      await openComposer();
+      // Wait up to ~6s for the subject input to mount after each attempt.
+      for (let i = 0; i < 12 && !opened; i++) { await SLEEP(500); opened = await composeIsOpen(); }
+    }
+    if (!opened) return { ok: false, result: 'failed', detail: 'Gmail compose window did not open' };
 
     // To field
     const toField = page.locator('input[aria-label*="To" i], input[peoplekit-id], textarea[name="to"]').first();
