@@ -14,7 +14,7 @@ import { getProfile, updateProfile, profileGaps, isOnboarded } from './src/profi
 import { cdpStatus, listTabs, verifyLogins } from './src/agent/browser.js';
 import { scrapePublicSource, scrapeBrowserSite, scrapeLinkedInPosts, PUBLIC_SOURCES, SITE_PRESETS } from './src/mcp/scrape.js';
 import { fillAndSubmit, linkedinEasyApply, linkedinDM, linkedinConnect } from './src/mcp/apply.js';
-import { easyApply } from './src/mcp/easyapply.js';
+import { easyApply, inspectEasyApply, applyEasyApplyWithAnswers } from './src/mcp/easyapply.js';
 import { applyForm } from './src/mcp/forms.js';
 import { connect as liConnect } from './src/mcp/connect.js';
 import { commentInterested } from './src/mcp/comment.js';
@@ -235,6 +235,27 @@ const TOOLS = [
         const r = await easyApply({ url, dryRun });
         if (r.result === 'applied' || r.result === 'already_applied') setStatus(url, 'applied', r.detail);
         else if (r.result === 'needs_answers') setStatus(url, 'needs_manual', r.detail);
+        writeDash();
+        return r;
+      }));
+    },
+  },
+
+  {
+    name: 'easyapply_inspect',
+    description: "Open a LinkedIn Easy Apply and return the FULL ordered field list across ALL pages WITHOUT submitting — each {question, type (text|long-text|single-choice|multi-choice|select|file), options, maxlength, required, page}. Use this to READ an unfamiliar form so YOU reason over every question with the user's CV + profile, then answer via easyapply_apply_with_answers. Every form differs: inspect first, think, then fill.",
+    inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+    handler: async ({ url }) => ok(await inspectEasyApply({ url })),
+  },
+  {
+    name: 'easyapply_apply_with_answers',
+    description: "Submit a LinkedIn Easy Apply using YOUR reasoned answers. `answers` maps each question's text (from easyapply_inspect) to your answer: a string for text/select/single-choice, an array (or comma string) for multi-choice (e.g. timezones — pick any; the user can work any). Omissions fall back to the built-in engine. Fills radios/checkboxes/selects/text robustly (handles 2026 empty-label 0x0 inputs), advances every page, submits, verifies. result: applied|stuck|already_applied|no_easy_apply|closed|error. On stuck it returns the blocking fields so you can refine and retry.",
+    inputSchema: { type: 'object', properties: { url: { type: 'string' }, answers: { type: 'object' }, dryRun: { type: 'boolean' } }, required: ['url', 'answers'] },
+    handler: async ({ url, answers = {}, dryRun = false }) => {
+      const limit = getProfile().limits.maxAttemptsPerJob;
+      return ok(await timed('easyapply_apply_with_answers', url, { url }, limit, async () => {
+        const r = await applyEasyApplyWithAnswers({ url, answers, dryRun });
+        if (r.result === 'applied' || r.result === 'already_applied') setStatus(url, 'applied', r.detail);
         writeDash();
         return r;
       }));

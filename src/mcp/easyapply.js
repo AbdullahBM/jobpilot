@@ -56,8 +56,32 @@ const SCAN = (dlg) => {
       required: el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(q),
       numeric: el.type === 'number' || /numeric/i.test(el.id) || el.getAttribute('inputmode') === 'numeric',
       maxlength: (() => { const m = parseInt(el.getAttribute('maxlength')); return Number.isFinite(m) && m > 0 ? m : 0; })(),
+      grpIdx: (() => {
+        if (el.type !== 'radio' && el.type !== 'checkbox') return -1;
+        const fsAnc = el.closest('fieldset, [role="group"], [role="radiogroup"]');
+        if (!fsAnc) return -1;
+        return [...dlg.querySelectorAll('fieldset, [role="group"], [role="radiogroup"]')].indexOf(fsAnc);
+      })(),
     });
   }
+  // Per-fieldset metadata for BARE radio/checkbox groups (no name/aria-label/label), e.g. the
+  // timezone multi-select: derive the question from the nearest heading before the fieldset and
+  // the options from the fieldset's text lines.
+  const groupByIdx = {};
+  try {
+    [...dlg.querySelectorAll('fieldset, [role="group"], [role="radiogroup"]')].forEach((fsEl, gi) => {
+      const inputs = fsEl.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+      if (inputs.length < 2) return;
+      let question = (inputs[0].getAttribute('aria-label') || fsEl.querySelector('legend')?.innerText || '').replace(/\s+/g, ' ').trim();
+      if (!question) {
+        let prev = fsEl.previousElementSibling, hops = 0;
+        while (prev && hops < 4 && !question) { const t = (prev.innerText || '').trim(); if (t && t.length < 160 && /\?|time ?zone|which|select|country|language|able to work/i.test(t)) question = t.split('\n').pop().trim(); prev = prev.previousElementSibling; hops++; }
+      }
+      const qn = question.toLowerCase().replace(/\*+$/, '').trim();
+      const lines = (fsEl.innerText || '').split('\n').map(s => s.trim()).filter(s => s && s.length < 40 && s.toLowerCase().replace(/\*+$/, '').trim() !== qn);
+      groupByIdx[gi] = { question: question.slice(0, 120), options: [...new Set(lines)].slice(0, inputs.length), isCheckbox: inputs[0].type === 'checkbox' };
+    });
+  } catch {}
   // For radio groups whose option labels are not on the inputs (2026 LinkedIn), capture the
   // ordered list of visible option texts that follow each question heading, so multi-option
   // radios (e.g. English: Native/Fluent, Advanced, …) can be matched by position.
@@ -86,7 +110,7 @@ const SCAN = (dlg) => {
   // LinkedIn alternates between "1/6 pages", "16%", and
   // "16 percent complete". Keep all forms so a validation-blocked page is
   // recognized as unchanged and its missing required fields can be surfaced.
-  return { fields: out, errors, radioGroupOptions, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%|(\d+)\s+percent\s+complete/i) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
+  return { fields: out, errors, radioGroupOptions, groupByIdx, progress: (text.match(/(\d+)\/(\d+) pages|(\d+)%|(\d+)\s+percent\s+complete/i) || [''])[0], heading: (dlg.querySelector('h3, h2')?.innerText || '').trim(), text: text.slice(0, 300) };
 };
 
 const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|country code|phone country code)/i;
@@ -98,8 +122,22 @@ const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|countr
 const OPTIONAL_CONSENT = /allow(ing)?\b.*\bcontact|contact me about|marketing|promotional|newsletter|future (job )?opportunities|future roles|future positions|keep me (informed|updated)|stay in touch|follow (the )?company|receive (updates|communications|emails)|opt[- ]?in|subscribe|share my (profile|data|information)|talent (community|network|pool)|join .* talent/i;
 const isOptionalConsent = q => OPTIONAL_CONSENT.test(String(q || ''));
 
+// Look up the AGENT's reasoned answer for a question (fuzzy, case-insensitive). Returns the
+// answer if the agent provided one for this field, else undefined so the caller falls back to
+// the built-in engine. This is what lets the agent reason over ANY form, not just known shapes.
+function agentAnswerFor(ctx, question) {
+  const map = ctx && ctx.agentAnswers;
+  if (!map || !question) return undefined;
+  const norm = s => String(s).toLowerCase().replace(/\s+/g, ' ').replace(/\*+$/, '').trim();
+  const q = norm(question);
+  if (map[question] != null) return map[question];
+  for (const [k, v] of Object.entries(map)) if (norm(k) === q) return v;
+  for (const [k, v] of Object.entries(map)) { const kk = norm(k); if (kk.length > 10 && (q.includes(kk) || kk.includes(q))) return v; }
+  return undefined;
+}
+
 async function fillPage(page, dlg, ctx, job = {}) {
-  const { fields, radioGroupOptions = {} } = await dlg.evaluate(SCAN);
+  const { fields, radioGroupOptions = {}, groupByIdx = {} } = await dlg.evaluate(SCAN);
   const p = getProfile();
   const cvPath = cvAttachmentForJob(job, p);
   const groups = {};
@@ -108,7 +146,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
   // of role="checkbox" wrappers around hidden inputs. The `required` flag lives on the group, not
   // each input, so handling them one-by-one leaves the group empty and the page can't advance.
   const cbGroups = {};
-  for (const f of fields) if (f.type === 'checkbox') (cbGroups[f.q] ||= []).push(f);
+  for (const f of fields) if (f.type === 'checkbox') { const key = f.name || (f.grpIdx >= 0 ? `grp${f.grpIdx}` : f.q); (cbGroups[key] ||= []).push(f); }
   // A real multi-option question = 2+ checkboxes sharing one question. Standalone checkboxes
   // (single consent/privacy/terms boxes) are still handled inline in the per-field loop.
   const groupedCbIds = new Set();
@@ -133,9 +171,13 @@ async function fillPage(page, dlg, ctx, job = {}) {
       }
       if (f.tag === 'SELECT') {
         if (f.val && !/select an option/i.test(f.val)) { if (!IDENTITY.test(f.q)) learn(f.q, f.val, 'harvested'); continue; }
-        const pick = choiceAnswer(f.q, f.opts.slice(1));
+        const selOpts = f.opts.slice(1);
+        let pick = null;
+        const agentSel = agentAnswerFor(ctx, f.q);
+        if (agentSel !== undefined) { const a = String(Array.isArray(agentSel) ? agentSel[0] : agentSel).toLowerCase(); pick = selOpts.find(o => o.toLowerCase() === a) || selOpts.find(o => o.toLowerCase().includes(a) || a.includes(o.toLowerCase())) || null; }
+        if (!pick) pick = choiceAnswer(f.q, selOpts);
         if (pick) await loc.selectOption({ label: pick }).catch(() => {});
-        else if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q, f.opts.slice(1)); }
+        else if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q, selOpts); }
         continue;
       }
       if (f.val && f.val.trim()) { if (!IDENTITY.test(f.q) && f.q.length > 8) learn(f.q, f.val.trim(), 'harvested'); continue; }
@@ -144,7 +186,8 @@ async function fillPage(page, dlg, ctx, job = {}) {
       // Force a numeric answer for anything salary-shaped so the page can advance.
       const isSalary = /salary|compensation|\bctc\b|expected pay|pay expectation|remuneration|\brate\b|were you making/i.test(f.q);
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(f.q);
-      let v = textAnswer(f.q, { numeric });
+      const agentV = agentAnswerFor(ctx, f.q);
+      let v = agentV !== undefined ? (Array.isArray(agentV) ? agentV.join(', ') : String(agentV)) : textAnswer(f.q, { numeric });
       // Country-of-residence questions: answer with the profile's country.
       if ((v == null || v === '') && /which country.*(reside|live|based)|country.*(you.*(reside|live)|of residence)|where.*(do you )?(reside|live)/i.test(f.q)) {
         v = p.country || (p.location || '').split(',').pop()?.trim() || 'Pakistan';
@@ -195,8 +238,16 @@ async function fillPage(page, dlg, ctx, job = {}) {
     else if (allEmpty && g.length === 2) effLabels = ['Yes', 'No'];
     else effLabels = rawLabels;
 
-    const pick = choiceAnswer(g[0].q, effLabels);
-    if (process.env.DEBUG_EA) console.log('RADIO', JSON.stringify({ q: g[0].q, raw: rawLabels, eff: effLabels, pick }));
+    let pick = null;
+    const agentR = agentAnswerFor(ctx, g[0].q);
+    if (agentR !== undefined) {
+      const a = String(Array.isArray(agentR) ? agentR[0] : agentR).toLowerCase().trim();
+      pick = effLabels.find(l => l.toLowerCase() === a) || effLabels.find(l => l.toLowerCase().includes(a) || a.includes(l.toLowerCase())) || null;
+      if (!pick && /^y/.test(a)) pick = effLabels.find(l => /^yes/i.test(l));
+      if (!pick && /^n/.test(a)) pick = effLabels.find(l => /^no/i.test(l));
+    }
+    if (!pick) pick = choiceAnswer(g[0].q, effLabels);
+    if (process.env.DEBUG_EA) console.log('RADIO', JSON.stringify({ q: g[0].q, raw: rawLabels, eff: effLabels, agent: agentR, pick }));
     if (!pick) {
       if (isOptionalConsent(g[0].q)) continue; // optional consent radio → don't block
       ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); continue;
@@ -228,36 +279,52 @@ async function fillPage(page, dlg, ctx, job = {}) {
     else if (!isOptionalConsent(g[0].q)) { ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); }
   }
 
-  // Checkbox GROUPS (multi-option "select all that apply" / single-select questions).
-  for (const [q, g] of Object.entries(cbGroups)) {
-    if (g.length < 2 || !q || q.length <= 8) continue;       // standalone consent handled inline
-    if (g.some(c => c.checked)) { if (q.length > 8) learn(q, g.filter(c => c.checked).map(c => c.optLabel).join(', '), 'harvested'); continue; }
-    const labels = g.map(c => c.optLabel).filter(Boolean);
-    // Pick the matching option(s) from the user's profile/answers; if nothing matches, prefer a
-    // safe neutral option ("Other"/"None") so a required group never blocks the page, else ask.
+  // Checkbox GROUPS (multi-option "select all that apply"). Grouped by shared name OR enclosing
+  // fieldset (grpIdx) so bare 2026 checkboxes (no name/label) are handled too.
+  for (const [, g] of Object.entries(cbGroups)) {
+    if (g.length < 2) continue;                              // standalone consent handled inline
+    if (g.some(c => c.checked)) continue;                    // user already selected something
+    // Real question + ordered options come from per-fieldset metadata for bare checkboxes.
+    const gm = g[0].grpIdx >= 0 ? groupByIdx[g[0].grpIdx] : null;
+    const question = ((gm && gm.question) || g[0].q || '').trim();
+    const rawLabels = g.map(c => (c.optLabel || '').trim());
+    const captured = (gm && gm.options && gm.options.length === g.length ? gm.options : null) || radioGroupOptions[question.slice(0, 120)];
+    const labels = rawLabels.every(l => !l) ? (Array.isArray(captured) && captured.length === g.length ? captured : rawLabels) : rawLabels;
+
     let picks = [];
-    const choice = choiceAnswer(q, labels);
-    if (choice) picks = [choice];
-    if (!picks.length) { const other = labels.find(l => /^(other|none|n\/?a|prefer not)/i.test(l)); if (other) picks = [other]; }
-    if (process.env.DEBUG_EA) console.log('CBGROUP', JSON.stringify({ q, opts: labels, picks }));
-    if (!picks.length) {
-      if (g[0].required && !isOptionalConsent(q)) { ctx.unanswered.add(q); askLater(q, labels); }
-      continue;
+    const agentC = agentAnswerFor(ctx, question);
+    if (agentC !== undefined) {
+      const wanted = (Array.isArray(agentC) ? agentC : String(agentC).split(/[,/]/)).map(s => s.toLowerCase().trim()).filter(Boolean);
+      picks = labels.filter(l => wanted.some(w => l.toLowerCase() === w || l.toLowerCase().includes(w) || w.includes(l.toLowerCase())));
     }
+    if (!picks.length) { const choice = choiceAnswer(question, labels.filter(Boolean)); if (choice) picks = [choice]; }
+    // Timezone / region "which are you able to work in" → user can work ANY, so pick US or the first.
+    if (!picks.length && /time ?zone|able to work in|which of the following|regions?|markets?/i.test(question)) {
+      picks = [labels.find(l => /\bus\b|united states|u\.s\.|est|et\b|pst/i.test(l)) || labels.find(Boolean)].filter(Boolean);
+    }
+    if (!picks.length && g[0].required) picks = [labels.find(l => /^(other|none|n\/?a|prefer not)/i.test(l)) || labels.find(Boolean)].filter(Boolean);
+    if (process.env.DEBUG_EA) console.log('CBGROUP', JSON.stringify({ q: question, opts: labels, agent: agentC, picks }));
+    if (!picks.length) { if (g[0].required && !isOptionalConsent(question)) { ctx.unanswered.add(question); askLater(question, labels.filter(Boolean)); } continue; }
+
+    let anyChecked = false;
     for (const pick of picks) {
-      // Click the role=checkbox WRAPPER (hidden input ignores synthetic clicks), same as radios.
-      const esc = pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const wrap = dlg.locator('[role="checkbox"]').filter({ hasText: new RegExp(`^\\s*${esc}\\s*$`, 'i') }).first();
-      let okCb = false;
-      if (await wrap.count().catch(() => 0)) { await wrap.click({ timeout: 3000 }).catch(() => {}); okCb = await wrap.getAttribute('aria-checked').then(v => v === 'true').catch(() => false); }
-      if (!okCb) {
-        const f = g.find(x => x.optLabel === pick) || g[0];
-        const loc = page.locator(`[data-ja="${f.id}"]`);
-        await loc.locator('xpath=ancestor::*[@role="checkbox"][1]').click({ timeout: 2500 }).catch(() => {});
-        await loc.check({ force: true }).catch(() => {});
-      }
+      const idx = labels.findIndex(l => l.toLowerCase() === String(pick).toLowerCase());
+      const target = idx >= 0 ? g[idx] : (g.find(x => (x.optLabel || '').toLowerCase() === String(pick).toLowerCase()) || g[0]);
+      const loc = page.locator(`[data-ja="${target.id}"]`);
+      const ok = await loc.evaluate(el => {
+        const root = el.getRootNode();
+        const lbl = el.id ? root.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+        if (lbl) { try { lbl.click(); } catch {} }
+        if (!el.checked) { el.checked = true; try { el.click(); } catch {} }
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return !!el.checked;
+      }).catch(() => false);
+      if (!ok) { const wrap = dlg.locator('[role="checkbox"]').filter({ hasText: new RegExp(`^\\s*${String(pick).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first(); if (await wrap.count().catch(() => 0)) await wrap.click({ timeout: 2500 }).catch(() => {}); }
+      anyChecked = anyChecked || ok;
     }
-    ctx.used.push(q);
+    if (anyChecked) ctx.used.push(question);
+    else if (g[0].required && !isOptionalConsent(question)) { ctx.unanswered.add(question); askLater(question, labels.filter(Boolean)); }
   }
 }
 
@@ -450,5 +517,130 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
     await discard(page).catch(() => {});
     await page.close().catch(() => {});
     return { ok: false, result: 'error', detail: e.message.slice(0, 200), questions: [...ctx.unanswered], meta };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// AGENT-DRIVEN REASONING PATH — the agent reasons over any form using CV + profile.
+//   inspectEasyApply(url)                → full ordered field list across all pages (no submit)
+//   applyEasyApplyWithAnswers(url, map)  → fills using the agent's answers (keyed by question),
+//                                          engine fallback for omissions, then submit + verify.
+// ──────────────────────────────────────────────────────────────────────────────
+async function openEasyApplyDialog(page, url) {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 40000 });
+  await SLEEP(3000);
+  const meta = await page.evaluate(() => {
+    const main = (document.querySelector('main') || document.body).innerText;
+    return { posted: (main.match(/(\d+\s+(minute|hour|day|week|month)s?\s+ago)/) || [])[1] || '', head: main.slice(0, 1500) };
+  });
+  if (APPLIED_RE.test(meta.head)) return { done: { ok: true, result: 'already_applied', detail: 'already applied', meta } };
+  if (/no longer accepting applications/i.test(meta.head)) return { done: { ok: true, result: 'closed', detail: 'closed', meta } };
+  if (/limit daily submissions|apply tomorrow|reached your daily|daily (submission|application) limit/i.test(meta.head)) return { done: { ok: false, result: 'daily_limit', detail: 'daily limit', meta } };
+  const ea = page.getByRole('button', { name: /easy apply/i }).first();
+  if (!(await ea.isVisible().catch(() => false))) return { done: { ok: true, result: 'no_easy_apply', detail: 'no Easy Apply button', meta } };
+  await ea.click();
+  let dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit|continue/i }) }).first();
+  await dlg.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+  if (await dlg.isVisible().catch(() => false)) {
+    const dlgText = await dlg.innerText().catch(() => '');
+    if (/safety reminder|safety tips|research the company/i.test(dlgText)) {
+      await dlg.getByRole('link', { name: /continue applying/i }).or(dlg.getByRole('button', { name: /continue applying/i })).first().click().catch(() => {});
+      await SLEEP(1500);
+      dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit/i }) }).first();
+      await dlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    }
+  }
+  if (!(await dlg.isVisible().catch(() => false))) return { done: { ok: false, result: 'error', detail: 'dialog did not open', meta } };
+  return { dlg, meta };
+}
+
+export async function inspectEasyApply({ url, timeoutMs = 120000 }) {
+  const bctx = await getContext();
+  const page = await bctx.newPage();
+  page.setDefaultTimeout(15000);
+  const t0 = Date.now();
+  try {
+    const opened = await openEasyApplyDialog(page, url);
+    if (opened.done) { await page.close().catch(() => {}); return { ok: opened.done.ok, result: opened.done.result, detail: opened.done.detail, pages: [], fields: [], meta: opened.done.meta }; }
+    const dlg = opened.dlg;
+    const pages = [];
+    for (let step = 0; step < 15 && Date.now() - t0 < timeoutMs; step++) {
+      const scan = await dlg.evaluate(SCAN).catch(() => ({ fields: [], radioGroupOptions: {}, groupByIdx: {}, heading: '' }));
+      const logical = [];
+      const grpSeen = new Set();
+      for (const f of scan.fields) {
+        if (f.type === 'hidden') continue;
+        if (f.type === 'radio' || f.type === 'checkbox') {
+          const key = f.name || (f.grpIdx >= 0 ? `grp${f.grpIdx}` : f.q); if (grpSeen.has(key)) continue; grpSeen.add(key);
+          const group = scan.fields.filter(x => (x.name || (x.grpIdx >= 0 ? `grp${x.grpIdx}` : x.q)) === key && x.type === f.type);
+          const gm = f.grpIdx >= 0 ? scan.groupByIdx?.[f.grpIdx] : null;
+          const raw = group.map(r => (r.optLabel || '').trim());
+          const captured = (gm && gm.options?.length === group.length ? gm.options : null) || scan.radioGroupOptions?.[(f.q || '').slice(0, 120)];
+          const opts = raw.every(l => !l) ? (Array.isArray(captured) && captured.length === group.length ? captured : (group.length === 2 ? ['Yes', 'No'] : raw)) : raw;
+          logical.push({ question: (gm && gm.question) || f.q, type: f.type === 'radio' ? 'single-choice' : 'multi-choice', options: opts, required: !!f.required });
+        } else if (f.tag === 'SELECT') {
+          logical.push({ question: f.q, type: 'select', options: (f.opts || []).filter(o => o && !/^select/i.test(o)), required: !!f.required });
+        } else if (f.type === 'file') {
+          logical.push({ question: f.q || 'Resume', type: 'file', required: !!f.required });
+        } else {
+          logical.push({ question: f.q, type: f.tag === 'TEXTAREA' ? 'long-text' : 'text', maxlength: f.maxlength || 0, required: !!f.required });
+        }
+      }
+      pages.push({ step, heading: scan.heading, fields: logical });
+      const submit = dlg.getByRole('button', { name: /submit application/i }).first();
+      if (await submit.isVisible().catch(() => false)) break;
+      const next = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
+      if (!(await next.isVisible().catch(() => false))) break;
+      await next.click().catch(() => {});
+      await SLEEP(1500);
+    }
+    await discard(page);
+    await page.close().catch(() => {});
+    const fields = pages.flatMap(p => p.fields.map(f => ({ ...f, page: p.step })));
+    return { ok: true, result: 'inspected', pages, fields, meta: opened.meta };
+  } catch (e) {
+    await discard(page).catch(() => {});
+    await page.close().catch(() => {});
+    return { ok: false, result: 'error', detail: e.message.slice(0, 200), pages: [], fields: [] };
+  }
+}
+
+export async function applyEasyApplyWithAnswers({ url, answers = {}, timeoutMs = 180000, dryRun = false, job = {} }) {
+  const bctx = await getContext();
+  const page = await bctx.newPage();
+  page.setDefaultTimeout(15000);
+  const t0 = Date.now();
+  const ctx = { unanswered: new Set(), used: [], agentAnswers: answers };
+  try {
+    const opened = await openEasyApplyDialog(page, url);
+    if (opened.done) { await page.close().catch(() => {}); return { ...opened.done }; }
+    const dlg = opened.dlg;
+    let lastProgress = '', same = 0;
+    for (let step = 0; step < 15 && Date.now() - t0 < timeoutMs; step++) {
+      await fillPage(page, dlg, ctx, job);
+      await SLEEP(500);
+      const submit = dlg.getByRole('button', { name: /submit application/i }).first();
+      if (await submit.isVisible().catch(() => false)) {
+        if (dryRun) { await discard(page); await page.close(); return { ok: true, result: 'dry_run_ready', detail: `reached submit at step ${step}` }; }
+        await submit.click(); await SLEEP(3500);
+        await page.getByRole('button', { name: /^done$|dismiss/i }).first().click({ timeout: 3000 }).catch(() => {});
+        const okv = await verifyApplied(page, url);
+        await page.close().catch(() => {});
+        return { ok: okv, result: okv ? 'applied' : 'stuck', detail: okv ? `submitted + verified (${step + 1} pages)` : 'submit not confirmed', used: ctx.used };
+      }
+      const next = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
+      if (!(await next.isVisible().catch(() => false))) break;
+      await next.click().catch(() => {});
+      await SLEEP(1600);
+      const st = await dlg.evaluate(SCAN).catch(() => ({ progress: '' }));
+      if (st.progress && st.progress === lastProgress) { if (++same >= 2) { const a = await analyzePage(dlg).catch(() => null); const blk = a ? a.blocking.map(b => `${b.q} (${b.reason})`).join(' | ') : ''; await discard(page); await page.close(); return { ok: false, result: 'stuck', detail: 'could not advance — ' + (blk || 'validation'), blocking: a?.blocking || [] }; } } else same = 0;
+      lastProgress = st.progress;
+    }
+    await discard(page); await page.close().catch(() => {});
+    return { ok: false, result: 'stuck', detail: 'did not reach submit', unanswered: [...ctx.unanswered] };
+  } catch (e) {
+    await discard(page).catch(() => {});
+    await page.close().catch(() => {});
+    return { ok: false, result: 'error', detail: e.message.slice(0, 200) };
   }
 }
