@@ -278,6 +278,15 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
 </div>
 
 <div class="card">
+  <h2>🧠 Multi-brain evolution loop</h2>
+  <label style="display:flex;gap:8px;align-items:flex-start;color:#e2e8f0">
+    <input type="checkbox" id="autoBrainLoop" ${p.consent?.autoBrainLoop === true ? 'checked' : ''}>
+    Let my installed coding-agent CLIs (Codex · Grok · Claude · Gemini) take turns autonomously improving JobPilot's own tools.
+  </label>
+  <div class="sub" style="margin:8px 0 0">Optional and starts OFF. When ON, whichever coding CLIs are installed on this machine take turns reasoning over the agent's own failures (stuck forms, Easy Apply pages, etc.) and pushing <b>code/doc</b> fixes to the repo — so the agent keeps getting better on its own. <b>Strictly CLIs — no API keys are ever used or stored.</b> Hard-guarded: it can never commit your data, CV, or credentials. Turn off anytime from the dashboard.</div>
+</div>
+
+<div class="card">
   <h2>💰 The things the agent should never guess</h2>
   <div class="sub" style="margin:-6px 0 10px">So it can answer screening questions without pausing to ask you.</div>
   <div class="row">
@@ -365,6 +374,7 @@ $('save').onclick = async () => {
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
     preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value, allowTailoredCv: $('allowTailoredCv').checked },
     loggedInSources: parseList($('sources').value),
+    consent: { autoBrainLoop: $('autoBrainLoop').checked },
     answers,
   };
   $('saveStatus').textContent = 'Saving…';
