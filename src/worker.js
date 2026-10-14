@@ -17,6 +17,7 @@ import { liPosts, liJobs, hnHiring, publicBoards, relToIso } from './mcp/sources
 import { easyApply } from './mcp/easyapply.js';
 import { applyForm } from './mcp/forms.js';
 import { connect } from './mcp/connect.js';
+import { commentInterested } from './mcp/comment.js';
 import { sendViaGmail } from './mcp/gmail.js';
 import { subject as mkSubject, body as mkBody } from './scraper/email_content.js';
 import { writeDash } from './dashboard.js';
@@ -505,6 +506,21 @@ async function connector() {
     else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
     log('li_connect', j.company, j.role, j.poster_url, /^connected/.test(r.result) ? 'ok' : r.result === 'error' ? 'fail' : 'skip', `${r.result}: ${r.detail}`);
     say('connector', `🔗 ${r.result} → ${j.poster_name}`);
+
+    // Comment "Interested" on the hiring POST itself (extra touchpoint recruiters notice).
+    // Only for real LinkedIn feed/post URLs, once per post, and never when LinkedIn is
+    // throttling. Failure here never blocks the lead — it's a bonus engagement step.
+    const postUrl = j.url && /linkedin\.com\/(feed\/update|posts\/)/i.test(j.url) ? j.url : '';
+    if (postUrl && !needsLogin('LinkedIn') && r.result !== 'limit') {
+      try {
+        beat('connector', `💬 commenting on post → ${j.company || j.poster_name}`);
+        const c = await commentInterested({ postUrl, role: j.role, company: j.company });
+        log('li_comment', j.company, j.role, postUrl, /^(commented|already_commented)/.test(c.result) ? 'ok' : 'skip', `${c.result}: ${c.detail}`);
+        if (c.result === 'commented') { setFields(j.url, { notes: `${j.notes ? j.notes + ' · ' : ''}commented Interested on post` }); say('connector', `💬 commented Interested → ${j.company || j.poster_name}`); }
+        await extraCooldown();
+      } catch (ce) { say('connector', 'comment skipped: ' + ((ce && ce.message) || ce || '').toString().slice(0, 70)); }
+    }
+
     writeDash();
     await jitter(PACE.connector); await extraCooldown();
    } catch (e) { say('connector', 'error (skipping lead): ' + ((e && e.message) || e || '').toString().slice(0, 80)); await SLEEP(5000); }

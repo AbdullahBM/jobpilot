@@ -49,9 +49,10 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
     let composeOpened = false;
     for (let attempt = 0; attempt < 3 && !composeOpened; attempt++) {
       const composeBtn = page.getByRole('button', { name: /compose/i }).first()
-        .or(page.locator('[gh="cm"], [data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE').first());
+        .or(page.locator('[gh="cm"], div[role="button"][gh="cm"], [data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE.L3, .T-I-KE').first());
       await composeBtn.click({ timeout: 10000 }).catch(() => {});
       // Keyboard fallback: Gmail opens compose on "c" when the inbox has focus.
+      await page.locator('body').click({ position: { x: 5, y: 300 } }).catch(() => {});
       await page.keyboard.press('c').catch(() => {});
       composeOpened = await subjectInput.waitFor({ state: 'visible', timeout: 12000 })
         .then(() => true).catch(() => false);
