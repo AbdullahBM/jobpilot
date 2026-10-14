@@ -362,93 +362,222 @@ async function approveForkCIRuns(repo) {
   return approved;
 }
 
+// ── Linked-issue resolution ────────────────────────────────────────────────────
+
 /**
- * Main-repo-only: review EVERY open PR from EVERYONE — including PRs from OTHER contributors'
- * forks (there are several contributing agents out there, not just this one). Acts on each:
- *   • first approve any pending fork CI so the `review` security gate actually runs;
- *   • empty / redundant PR (0 changes)        → close with a note.
- *   • useful PR whose `review` gate passed      → merge (merge commit). Uses --admin to force
- *                                                 past a stuck/mechanical `automerge` required check.
- *   • useful PR whose `review` gate FAILED      → left open + flagged. The `review` job is the
- *                                                 data-safety + security gate; that one is NEVER
- *                                                 bypassed, even for a useful-looking PR from anyone.
- *   • useful PR with CI pending/absent          → CI (re)triggered via approval; retried next cycle.
+ * Resolve the issue(s) a PR is intended to address, so usefulness is judged against real intent
+ * rather than labels. Combines two signals:
+ *   • GitHub's native linkage — `closingIssuesReferences` (set via "Fixes #N" or the PR UI).
+ *   • The PR body — "Fixes/Closes/Resolves #N" closing keywords (strong) AND any bare "#N"
+ *     mention (weak/context, e.g. "the top recurring encounter (#20, x48)").
+ * Each referenced issue is fetched (title/state/body) and returned, deduped by number. Fetch
+ * failures (e.g. the number is actually a PR, or doesn't exist) are tolerated and skipped.
  *
- * @returns {Promise<{merged: string[], closed: string[], skipped: string[], approvedCI?: string[], reason?}>}
+ * @param {string} repo - owner/name of the repo the PR targets
+ * @param {{number:number, body?:string}} pr
+ * @returns {Promise<Array<{number:number,title:string,state:string,body:string,closing:boolean}>>}
  */
-export async function reviewAndMergePRs() {
+export async function linkedIssuesFor(repo, pr) {
+  const closing = new Set();   // strong: this PR closes the issue
+  const mentioned = new Set(); // weak: referenced for context
+  const body = pr.body || '';
+
+  // Closing keywords in the body.
+  const closeRe = /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s*:?\s+#(\d+)\b/gi;
+  let m;
+  while ((m = closeRe.exec(body))) closing.add(Number(m[1]));
+  // Any other bare "#N" reference → context only.
+  const bareRe = /(?<![\w/])#(\d+)\b/g;
+  while ((m = bareRe.exec(body))) {
+    const n = Number(m[1]);
+    if (!closing.has(n)) mentioned.add(n);
+  }
+
+  // GitHub's own closing linkage (authoritative for the "closing" set).
+  try {
+    const [owner, name] = repo.split('/');
+    const q = 'query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name)' +
+      '{pullRequest(number:$num){closingIssuesReferences(first:20){nodes{number}}}}}';
+    const raw = await gh('api', 'graphql', '-f', `query=${q}`,
+      '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `num=${pr.number}`);
+    const nodes = JSON.parse(raw)?.data?.repository?.pullRequest?.closingIssuesReferences?.nodes || [];
+    for (const n of nodes) { closing.add(n.number); mentioned.delete(n.number); }
+  } catch {}
+
+  const out = [];
+  for (const n of [...closing, ...mentioned]) {
+    try {
+      const raw = await gh('issue', 'view', String(n), '--repo', repo, '--json', 'number,title,state,body');
+      const j = JSON.parse(raw);
+      out.push({ number: j.number, title: j.title, state: j.state, body: j.body || '', closing: closing.has(n) });
+    } catch { /* not an issue / inaccessible — skip */ }
+  }
+  return out;
+}
+
+// ── Usefulness assessment (label-independent, testable, pure) ───────────────────
+
+/**
+ * Decide whether a PR is worth merging — on the merits of the change itself, NOT its labels or
+ * author. Pure function: given the PR's size/files and its linked issues, returns a verdict.
+ *
+ *   • empty (0 files or 0 net churn)                       → not useful, close as redundant.
+ *   • touches sensitive / non-allowlisted paths            → not useful (CI would fail anyway).
+ *   • real churn in allowlisted code/docs                  → useful; strengthened if it addresses
+ *                                                            an OPEN linked issue.
+ *
+ * Labels are deliberately never consulted here.
+ *
+ * @param {{changedFiles?:number, additions?:number, deletions?:number, files?:Array<{path:string}|string>}} pr
+ * @param {Array<{number:number,state:string,closing?:boolean}>} [linkedIssues]
+ * @returns {{useful:boolean, empty:boolean, addressesOpenIssue:boolean, reason:string}}
+ */
+export function assessUsefulness(pr, linkedIssues = []) {
+  const changedFiles = pr.changedFiles || 0;
+  const churn = (pr.additions || 0) + (pr.deletions || 0);
+
+  if (changedFiles === 0 || churn === 0) {
+    return { useful: false, empty: true, addressesOpenIssue: false, reason: 'no net changes against base (empty/redundant)' };
+  }
+
+  const paths = (pr.files || []).map(f => (typeof f === 'string' ? f : f.path)).filter(Boolean);
+  if (paths.length) {
+    const bad = paths.filter(p => DENY.some(re => re.test(p)) || !ALLOW.some(re => re.test(p)));
+    if (bad.length) {
+      return { useful: false, empty: false, addressesOpenIssue: false,
+        reason: 'touches sensitive/non-allowlisted paths (would fail the security gate): ' + bad.slice(0, 6).join(', ') };
+    }
+  }
+
+  const addressesOpenIssue = linkedIssues.some(i => (i.state || '').toUpperCase() === 'OPEN');
+  const parts = [`${changedFiles} file(s), ${churn} line(s) in allowlisted paths`];
+  if (linkedIssues.length) {
+    const closing = linkedIssues.filter(i => i.closing).map(i => '#' + i.number);
+    const ctx     = linkedIssues.filter(i => !i.closing).map(i => '#' + i.number);
+    if (closing.length) parts.push(`closes ${closing.join(', ')}`);
+    if (ctx.length)     parts.push(`refs ${ctx.join(', ')}`);
+  }
+  return { useful: true, empty: false, addressesOpenIssue, reason: parts.join('; ') };
+}
+
+/**
+ * Review EVERY open PR from EVERYONE — any contributor, any fork, any label (there are several
+ * contributing agents out there, not just this one). Each PR is judged purely on usefulness
+ * (see {@link assessUsefulness}) against its actual diff + the issues it links/references
+ * ({@link linkedIssuesFor}) — labels and author are deliberately ignored. Acts on each:
+ *   • first approve any pending fork CI so the `review` security gate actually runs;
+ *   • empty / redundant PR (0 net changes)      → close with a note.
+ *   • not-useful PR (e.g. sensitive paths)       → left open + flagged with the reason.
+ *   • useful PR whose `review` gate passed        → merge (merge commit). Uses --admin to force
+ *                                                   past a stuck/mechanical required check —
+ *                                                   ONLY after the security gate is confirmed green.
+ *   • useful PR whose `review` gate FAILED        → left open + flagged. The `review` job is the
+ *                                                   data-safety + security gate; that one is NEVER
+ *                                                   bypassed, even for a useful PR from anyone.
+ *   • useful PR with CI pending/absent            → CI (re)triggered via approval; retried next cycle.
+ *
+ * Runs against `info.upstream` — for the main repo that is itself; for a fork it attempts the
+ * parent (merges there simply fail gracefully into `skipped` if we lack push rights).
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.dryRun] - assess + log intended actions, but perform no close/merge/update.
+ * @returns {Promise<{merged:string[], closed:string[], skipped:string[], conflicts:string[], approvedCI?:string[], plan?:object[], reason?:string}>}
+ */
+export async function reviewAndMergePRs({ dryRun = false } = {}) {
   try {
     const info = await repoInfo();
-    if (info.isFork) return { merged: [], closed: [], skipped: [], reason: 'this is a fork — PRs are reviewed on the upstream repo' };
+    const target = info.upstream || info.origin;
 
-    // Let external contributors' CI run so their security gate can pass.
-    const approvedCI = await approveForkCIRuns(info.upstream);
+    // Let external contributors' CI run so their security gate can pass. (Skipped on dry runs.)
+    const approvedCI = dryRun ? [] : await approveForkCIRuns(target);
 
     const raw = await gh(
       'pr', 'list',
-      '--repo', info.upstream,
+      '--repo', target,
       '--state', 'open',
-      '--json', 'number,title,statusCheckRollup,url,additions,deletions,changedFiles,author,isCrossRepository,mergeable,mergeStateStatus',
+      '--json', 'number,title,body,files,statusCheckRollup,url,additions,deletions,changedFiles,author,isCrossRepository,mergeable,mergeStateStatus',
       '--limit', '50',
     );
     const prs = JSON.parse(raw || '[]');
-    const merged = [], closed = [], skipped = [], conflicts = [];
+    const merged = [], closed = [], skipped = [], conflicts = [], plan = [];
 
     for (const pr of prs) {
       const who = pr.author?.login ? `@${pr.author.login}` : 'unknown';
       const origin = pr.isCrossRepository ? 'fork' : 'branch';
-      const useful = (pr.changedFiles || 0) > 0 && ((pr.additions || 0) + (pr.deletions || 0)) > 0;
+      const tag = `#${pr.number} (${origin} by ${who})`;
+
+      // Usefulness is judged on the diff + the issues the PR addresses — never on labels/author.
+      const issues = await linkedIssuesFor(target, pr).catch(() => []);
+      const verdict = assessUsefulness(pr, issues);
+      plan.push({ number: pr.number, url: pr.url, author: who, verdict });
 
       // Empty / redundant PR — nothing to merge, close it politely.
-      if (!useful) {
+      if (verdict.empty) {
+        if (dryRun) { closed.push(`${tag} — WOULD CLOSE (${verdict.reason})`); continue; }
         try {
-          await gh('pr', 'close', String(pr.number), '--repo', info.upstream,
-            '--comment', `Auto-closed by JobPilot: this PR has no changes against main (already merged / redundant). Thanks ${who}!`);
-          closed.push(pr.url);
-        } catch { skipped.push(pr.url); }
+          await gh('pr', 'close', String(pr.number), '--repo', target,
+            '--comment', `Auto-closed by JobPilot: no changes against the base branch (already merged / redundant). Thanks ${who}!`);
+          closed.push(`${tag} — closed (${verdict.reason})`);
+        } catch { skipped.push(`${tag} — close failed`); }
+        continue;
+      }
+
+      // Not useful (e.g. touches sensitive/non-allowlisted paths) → flag, do not merge.
+      if (!verdict.useful) {
+        skipped.push(`${tag} — not useful: ${verdict.reason}`);
         continue;
       }
 
       // The `review` CI job is the data-safety + security gate. It must have concluded SUCCESS.
       const checks = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
       const reviewCheck = checks.find(c => (c.name || c.workflowName || '').toLowerCase().includes('review'));
+      const reviewFailed = checks.some(c => {
+        const n = (c.name || c.workflowName || '').toLowerCase();
+        const concl = (c.conclusion || '').toUpperCase();
+        return n.includes('review') && ['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(concl);
+      });
       const reviewPassed = reviewCheck
-        ? (reviewCheck.conclusion === 'SUCCESS' || reviewCheck.conclusion === 'success')
+        ? (reviewCheck.conclusion || '').toUpperCase() === 'SUCCESS'
         : false;
       const noChecksYet = checks.length === 0;
 
+      if (reviewFailed) {
+        skipped.push(`${tag} — useful (${verdict.reason}) but the review security gate is NOT green → not bypassed`);
+        continue;
+      }
       if (!reviewPassed) {
-        // Security/review gate not green → never bypass it (protects everyone's data safety).
-        skipped.push(`${pr.url} (${origin} by ${who}${noChecksYet ? ' — awaiting CI' + (approvedCI.length ? ' (approved, will run)' : '') : ' — review gate not green, not bypassed'})`);
+        skipped.push(`${tag} — useful (${verdict.reason}); awaiting review gate${!noChecksYet ? ' (in progress)' : (approvedCI.length ? ' (CI approved, will run)' : '')} → retry next cycle`);
         continue;
       }
 
-      // Security gate is green. Now handle mergeability.
-      // CONFLICTING → cannot merge as-is; flag for conflict resolution (handled by resolveAndMergePR).
+      // ── From here the security gate is CONFIRMED GREEN. Only now may we merge. ──
       if (pr.mergeable === 'CONFLICTING') {
-        conflicts.push(`${pr.url} (${origin} by ${who} — useful + security-passed, needs conflict resolution)`);
+        conflicts.push(`${tag} — useful + security-passed, needs conflict resolution`);
         continue;
       }
-      // BEHIND the base but not conflicting → update the branch (merge base in) so it can merge.
       if (/BEHIND/i.test(pr.mergeStateStatus || '')) {
-        try { await gh('api', '--method', 'PUT', `repos/${info.upstream}/pulls/${pr.number}/update-branch`); } catch {}
+        if (dryRun) { skipped.push(`${tag} — WOULD update-branch then merge`); continue; }
+        try { await gh('api', '--method', 'PUT', `repos/${target}/pulls/${pr.number}/update-branch`); } catch {}
       }
 
-      // Useful + security gate green + mergeable → merge (works for fork PRs too), force past stuck automerge.
+      if (dryRun) { merged.push(`${tag} — WOULD MERGE (${verdict.reason})`); continue; }
+
+      // Useful + security gate green + mergeable → merge. --admin forces past a stuck/mechanical
+      // required check, and is used ONLY here, after the security gate is confirmed SUCCESS.
       try {
-        await gh('pr', 'merge', '--merge', '--admin', String(pr.number), '--repo', info.upstream);
-        merged.push(`${pr.url} (${origin} by ${who})`);
+        await gh('pr', 'merge', '--merge', '--admin', String(pr.number), '--repo', target);
+        merged.push(`${tag} — merged (${verdict.reason})`);
       } catch {
-        try { await gh('pr', 'merge', '--merge', '--auto', String(pr.number), '--repo', info.upstream); merged.push(`${pr.url} (${origin} by ${who})`); }
-        catch { skipped.push(`${pr.url} (${origin} by ${who} — merge blocked)`); }
+        try { await gh('pr', 'merge', '--merge', '--auto', String(pr.number), '--repo', target); merged.push(`${tag} — auto-merge armed (${verdict.reason})`); }
+        catch { skipped.push(`${tag} — merge blocked`); }
       }
     }
 
     // After merging PRs, pull the new commits into our local branch
-    if (merged.length) await syncBranch().catch(() => {});
-    return { merged, closed, skipped, conflicts, approvedCI };
+    if (merged.length && !dryRun) await syncBranch().catch(() => {});
+    return { merged, closed, skipped, conflicts, approvedCI, plan };
   } catch (e) {
-    return { merged: [], closed: [], skipped: [], reason: e.message };
+    return { merged: [], closed: [], skipped: [], conflicts: [], reason: e.message };
   }
 }
 
