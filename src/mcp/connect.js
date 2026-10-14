@@ -105,8 +105,13 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // Fill the textarea directly — there is no "Add a note" intermediate button.
     // Also handle the case where `navigated` is false but we're already on the custom-invite page
     // (LinkedIn SPA router sometimes changes the URL without firing Playwright's waitForNavigation).
-    const isCustomInviteUrl = /custom-invite|\/preload\/.*invite/i.test(urlAfter);
-    if (navigated && /custom-invite|invitation|connect/i.test(urlAfter) || isCustomInviteUrl) {
+    // Only treat this as the custom-invite flow when the URL is specifically an invite page.
+    // The previous `/connect/i` match was far too broad — it matched almost any LinkedIn URL
+    // (including a follow-only profile that never navigated to a real invite form), which drove
+    // the code into the submit-button retry loop against unrelated disabled feed "Submit"
+    // buttons. That mismatch was the dominant cause of encounter #20 (×48 "send button not found").
+    const isCustomInviteUrl = /custom-invite|invitation|\/preload\/.*invite/i.test(urlAfter);
+    if (navigated && isCustomInviteUrl) {
       if (withNote) {
         const ta = page.locator('textarea').first();
         const taVisible = await ta.isVisible().catch(() => false);
@@ -133,8 +138,15 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         await page.close();
         return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached custom-invite page' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' };
       }
-      // Click type=submit button on the custom-invite page (starts disabled, enables after textarea fill)
-      const submitOnPage = page.locator('button[type="submit"], input[type="submit"]').first();
+      // Click the submit button on the custom-invite page (starts disabled, enables after textarea
+      // fill). Prefer a submit scoped to a form/dialog that actually contains the note textarea —
+      // a bare page-wide `button[type="submit"]` also matches unrelated disabled feed/search
+      // "Submit" buttons (seen in encounter #20's snapshot), which never enable and cause a false
+      // "send button not found" after the retry loop.
+      const inviteForm = page.locator('form:has(textarea), div[role="dialog"]:has(textarea), dialog:has(textarea)').first();
+      const inviteFormCount = await inviteForm.count().catch(() => 0);
+      const submitScope = inviteFormCount ? inviteForm : page;
+      const submitOnPage = submitScope.locator('button[type="submit"], input[type="submit"]').first();
       // Extra wait after fill to let the React/Vue change handler enable the submit button
       if (usedNote) await SLEEP(1000);
       // Retry up to 20×500 ms for the submit button to become enabled
