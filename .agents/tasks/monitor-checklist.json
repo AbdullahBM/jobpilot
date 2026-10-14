@@ -1,0 +1,50 @@
+{
+  "goal": "Continuously monitor, evolve, and contribute for the JobPilot job-automation server. The always-on worker (scripts/worker-forever.mjs) is already running and must keep running; never write data/.stop. Iterate the monitor + self-evolution + contribution loop until the user explicitly stops.",
+  "complete": false,
+  "updatedAt": "2026-10-14T13:20:00.000Z",
+  "notes": "This checklist is the per-step work-breakdown for the monitoring loop. Each pass: pick the first unchecked item, implement it, verify, commit, mark done. When a loop item is done it is reset to false on the next cycle so the loop keeps running.",
+  "items": [
+    {
+      "id": "verify-worker-running",
+      "title": "Confirm the always-on worker + debug Chrome are alive (worker-state.json heartbeat fresh, chrome ok). Never stop them.",
+      "done": true,
+      "result": "worker-state.json heartbeat fresh (cycle running, 5 lanes reporting); onboard_status reports chrome ok (Chrome/155). Did not write data/.stop."
+    },
+    {
+      "id": "check-onboarding-login",
+      "title": "Run onboard_status: profile gaps clear, LinkedIn + Gmail logged in. Prompt user in one line only if truly logged out.",
+      "done": true,
+      "result": "No profile gaps; open tabs show Gmail inbox + LinkedIn job searches active (logged in). CDP connect timeout is transient, not a logout."
+    },
+    {
+      "id": "answer-pending-questions",
+      "title": "Clear pending application questions via learn_answer, inferring from profile; ask user only when not inferable.",
+      "done": true,
+      "result": "Learned 6 of 7 pending answers from profile (DevOps=Yes, Agentic AI=Yes, Whisper/VAPI/OpenAI=Yes, multimedia-confidential=Yes, annotation/moderation=No, Master's field=CS/Software Dev). The 'research experience' question has blank options so it is left pending until options appear."
+    },
+    {
+      "id": "sync-fork-with-upstream",
+      "title": "Keep the fork in sync: rebase/fast-forward local main onto upstream/main so it never drifts behind.",
+      "done": true,
+      "result": "Fork main was 3 behind / 2 ahead of upstream/main; the 2 ahead were duplicate patches upstream already merged via PR #101. Rebased local main onto upstream/main (both duplicates auto-skipped), fast-forwarded to upstream merge 92dfb24, and force-with-lease pushed origin/main back into sync (0/0 vs upstream). CI security gate + node --check pass."
+    },
+    {
+      "id": "triage-open-encounters",
+      "title": "Review open encounters from evolution_report; fix the top recurring one in code, resolve_encounter, then contribute_improvements.",
+      "done": false,
+      "result": ""
+    },
+    {
+      "id": "contribute-and-review-prs",
+      "title": "Run contribute_improvements (fork: open cross-fork PR; after merge, re-sync). Review/merge any open self-evolve PRs that pass CI.",
+      "done": false,
+      "result": ""
+    },
+    {
+      "id": "report-progress",
+      "title": "Report progress via get_stats + open_dashboard, then loop again (reset loop items to false).",
+      "done": false,
+      "result": ""
+    }
+  ]
+}
