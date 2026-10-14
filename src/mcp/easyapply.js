@@ -14,6 +14,27 @@ import { setFields } from '../tracker.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 const APPLIED_RE = /Application submitted|Applied \d+ (second|minute|hour|day)s? ago|You applied|application was sent/i;
+const LINKEDIN_THROTTLE_RE = /security check|security verification|unusual activity|doing that too (much|often|fast)|try again later|rate limit|temporarily (restricted|blocked)|verify you.?re a human|captcha|\/checkpoint\//i;
+
+// The Easy Apply control can remain visible while a LinkedIn checkpoint/overlay intercepts
+// clicks. Retry briefly, then classify the state as a throttle instead of burning the job's
+// attempts on the same 15-second locator timeout.
+async function clickEasyApplyControl(page, control) {
+  let lastError = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!(await control.isVisible().catch(() => false))) break;
+    try {
+      await control.click({ timeout: 5000 });
+      return { ok: true };
+    } catch (e) {
+      lastError = e?.message || String(e);
+      const state = `${await page.locator('body').innerText().catch(() => '')} ${page.url()}`;
+      if (LINKEDIN_THROTTLE_RE.test(state)) return { ok: false, throttled: true, detail: 'LinkedIn security check / rate limit intercepted Easy Apply' };
+      await SLEEP(500);
+    }
+  }
+  return { ok: false, throttled: false, detail: lastError || 'Easy Apply control was not clickable' };
+}
 
 // In-page: tag every field in the dialog and describe it.
 const SCAN = (dlg) => {
@@ -543,7 +564,7 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
       await page.close(); return { ok: false, result: 'daily_limit', detail: 'LinkedIn daily Easy Apply limit reached — pausing Easy Apply until tomorrow', meta };
     }
     // LinkedIn anti-bot throttle: a security checkpoint / "unusual activity" / rate-limit page.
-    if (/security check|security verification|unusual activity|doing that too (much|often|fast)|try again later|rate limit|you.?ve reached|temporarily (restricted|blocked)|verify you.?re a human|captcha|\/checkpoint\//i.test(meta.head + ' ' + page.url())) {
+    if (LINKEDIN_THROTTLE_RE.test(meta.head + ' ' + page.url())) {
       await encounter('easy_apply', 'linkedin anti-bot throttle / checkpoint', { url, page });
       await page.close(); return { ok: false, result: 'throttled', detail: 'LinkedIn security check / rate limit — backing off', meta };
     }
@@ -561,7 +582,15 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
       await page.close();
       return { ok: true, result: 'no_easy_apply', detail: extUrl ? 'external: ' + extUrl : 'no Easy Apply button', externalUrl: extUrl, meta };
     }
-    await ea.click();
+    const clickResult = await clickEasyApplyControl(page, ea);
+    if (!clickResult.ok) {
+      if (clickResult.throttled) {
+        await encounter('easy_apply', 'LinkedIn anti-bot throttle intercepted Easy Apply', { url, page });
+        await page.close(); return { ok: false, result: 'throttled', detail: clickResult.detail, meta };
+      }
+      await encounter('easy_apply', `Easy Apply control not clickable: ${clickResult.detail}`.slice(0, 580), { url, page });
+      await page.close(); return { ok: false, result: 'error', detail: clickResult.detail, meta };
+    }
     let dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit|continue/i }) }).first();
     await dlg.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
     if (!(await dlg.isVisible().catch(() => false))) {
@@ -670,7 +699,11 @@ async function openEasyApplyDialog(page, url) {
   if (/limit daily submissions|apply tomorrow|reached your daily|daily (submission|application) limit/i.test(meta.head)) return { done: { ok: false, result: 'daily_limit', detail: 'daily limit', meta } };
   const ea = page.getByRole('button', { name: /easy apply/i }).first();
   if (!(await ea.isVisible().catch(() => false))) return { done: { ok: true, result: 'no_easy_apply', detail: 'no Easy Apply button', meta } };
-  await ea.click();
+  const clickResult = await clickEasyApplyControl(page, ea);
+  if (!clickResult.ok) {
+    await page.close().catch(() => {});
+    return { done: { ok: false, result: clickResult.throttled ? 'throttled' : 'error', detail: clickResult.detail, meta } };
+  }
   let dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit|continue/i }) }).first();
   await dlg.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
   if (await dlg.isVisible().catch(() => false)) {
