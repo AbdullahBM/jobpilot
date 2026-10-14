@@ -1,7 +1,7 @@
 {
   "goal": "Continuously monitor, evolve, and contribute for the JobPilot job-automation server. The always-on worker (scripts/worker-forever.mjs) is already running and must keep running; never write data/.stop. Iterate the monitor + self-evolution + contribution loop until the user explicitly stops.",
   "complete": false,
-  "updatedAt": "2026-10-14T13:33:00.000Z",
+  "updatedAt": "2026-10-14T13:40:00.000Z",
   "notes": "This checklist is the per-step work-breakdown for the monitoring loop. Each pass: pick the first unchecked item, implement it, verify, commit, mark done. When a loop item is done it is reset to false on the next cycle so the loop keeps running.",
   "items": [
     {
@@ -37,8 +37,8 @@
     {
       "id": "triage-open-encounters",
       "title": "Review open encounters from evolution_report; fix the top recurring one in code, resolve_encounter, then contribute_improvements.",
-      "done": false,
-      "result": "Open encounters reviewed (top: connect #20 x48 and lnkd.in form #11 x5), but all last_seen 2026-10-12/13 — stale from before current fixes (lnkd.in interstitial handling + connect Submit fallback already in src/mcp/forms.js/connect.js). Deferred in favor of the higher-impact stray-.stop root-cause fix that was actively breaking the loop. Will re-triage next pass once encounters re-accumulate under the now-running worker."
+      "done": true,
+      "result": "Re-triaged under the now-running worker. Top counts (connect #20 x48, lnkd.in #11 x5) are stale (last_seen 2026-10-12) and already addressed in connect.js/forms.js. Picked the freshest recurring one: jobicy #6 'submitted but no confirmation' (x8, last_seen 2026-10-13). Snapshot form-42caaa6965.html revealed the real cause: jobicy guest-apply submits into an email-OTP step (#step-verification/#code-inputs) + Cloudflare Turnstile (#turnstile-wrapper) that can't be automated, so the 20s confirm wait timed out and the lead was re-attempted. Fixed src/mcp/forms.js to detect that gate in the post-submit loop and return needs_manual early (route via email/connect). node --check + ci-security-scan pass. resolve_encounter #6 -> fixed. Committed 740ec1c."
     },
     {
       "id": "contribute-and-review-prs",
