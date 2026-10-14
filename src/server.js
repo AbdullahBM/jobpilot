@@ -306,6 +306,9 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
   </div>
   <label>Notice period</label>
   <input type="text" id="notice" value="${(p.answers || {})['notice period'] || ''}" placeholder="2 weeks">
+  <label>Max application emails per day — <b>leave blank or 0 for unlimited</b></label>
+  <input type="text" id="maxEmailsPerDay" value="${p.limits?.maxEmailsPerDay || ''}" placeholder="unlimited">
+  <div class="sub" style="margin:6px 0 0">Emailing goes through your own Gmail, so there's no account-restriction risk — the agent decides the pace. Set a number only if you want a hard ceiling.</div>
 </div>
 
 <div class="card">
@@ -375,6 +378,7 @@ $('save').onclick = async () => {
     preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value, allowTailoredCv: $('allowTailoredCv').checked },
     loggedInSources: parseList($('sources').value),
     consent: { autoBrainLoop: $('autoBrainLoop').checked },
+    limits: { maxEmailsPerDay: parseInt($('maxEmailsPerDay').value) || 0 },
     answers,
   };
   $('saveStatus').textContent = 'Saving…';
