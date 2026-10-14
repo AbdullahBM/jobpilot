@@ -1,6 +1,6 @@
 // src/worker.js — the always-on engine. Four lanes run CONCURRENTLY (own tab each),
 // so scraping never blocks applying and email never blocks Easy Apply:
-//   scout     — scrape LinkedIn posts/jobs (freshest first) + web (HN/Reddit/boards); UCB-ranked queries
+//   scout     — scrape LinkedIn posts/jobs (freshest first) + web (HN/boards); UCB-ranked queries
 //   mailer    — email leads (LinkedIn posts first, then web), newest posted first
 //   applier   — Easy Apply + external forms, interleaved, newest first
 //   connector — connection request + note to the poster
@@ -13,7 +13,7 @@ import { launchChrome } from './mcp/chrome.js';
 import { verifyLogins } from './agent/browser.js';
 import { initDB, upsertJobs, setStatus, setFields, bumpAttempt, logEmail, log, getJob,
   alreadyEmailed, alreadyApplied, alreadyConnected, logConnect, rows, doneToday } from './tracker.js';
-import { liPosts, liJobs, hnHiring, redditHiring, publicBoards, relToIso } from './mcp/sources.js';
+import { liPosts, liJobs, hnHiring, publicBoards, relToIso } from './mcp/sources.js';
 import { easyApply } from './mcp/easyapply.js';
 import { applyForm } from './mcp/forms.js';
 import { connect } from './mcp/connect.js';
@@ -30,9 +30,18 @@ import { getEasyApplyLimit, maybeRefreshEasyApplyLimit } from './limits.js';
 
 const DRY = process.env.DRY === '1';
 const DAILY = { email: 50, easy: 80, form: 30, connect: 18 };
-const MIN_REL = { email: 0.3, easy_apply: 0.4, form: 0.45, connect: 0.5 };
+// Relevance floors per channel. Lowered (per user request: "don't skip stuff") so fewer
+// borderline-but-real leads get dropped before we ever look at them — we'd rather see a
+// lead and let the CV/role guards decide than silently filter it out on a fuzzy score.
+const MIN_REL = { email: 0.15, easy_apply: 0.2, form: 0.25, connect: 0.3 };
 const MAX_AGE_DAYS = { email: 12, easy_apply: 4, form: 7, connect: 3 };
-const PACE = { mailer: [12000, 22000], applier: [4000, 9000], connector: [35000, 70000], scout: [15000, 30000] };
+// Per-lane pacing (ms, jittered). Cooldowns widened (per user request: "add cool down")
+// so we act more like a human and stay well under LinkedIn/Gmail throttle thresholds.
+// The applier (fastest, highest-risk lane) now waits 10-20s between actions instead of 4-9s.
+const PACE = { mailer: [18000, 30000], applier: [10000, 20000], connector: [45000, 90000], scout: [20000, 40000] };
+// Extra fixed cooldown applied after EVERY action in any lane, on top of the jittered PACE
+// above. Reads the user's profile knob (cooldownBetweenActionsMs) so it stays tunable.
+const extraCooldown = () => SLEEP(Math.max(0, +(getProfile().limits?.cooldownBetweenActionsMs) || 4000));
 const RUN_MS = +(process.env.RUN_MS || 0) || Infinity; // 0/absent = run forever
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
@@ -91,12 +100,33 @@ function flagLogin(site, reason, url) {
 function clearLogin(site) { if (state.loginNeeded && state.loginNeeded[site]) { delete state.loginNeeded[site]; delete loginProbeAt[site]; try { fs.writeFileSync(STATE, JSON.stringify(state)); } catch {} } }
 const notLoggedIn = d => /not logged in|log into|authwall|sign in|please log in/i.test(d || '');
 // The user's action policy is to leave roles that require citizenship, a visa,
-// a work permit, or other location-specific work authorization. Treat these as
-// hard skips instead of parking them for manual answers.
+// a work permit, or other location-specific work authorization. These were treated as
+// hard skips. Per user request ("don't skip stuff"), we now only hard-skip when the
+// requirement is for a DIFFERENT country than where the user is authorized — i.e. a
+// genuine foreign work-authorization wall (US citizens only, EU right-to-work, etc.).
+// A Pakistan-based lead that asks "are you authorized to work here?" is answerable
+// ("Yes"), so it's routed to manual/answer handling instead of being dropped.
 const WORK_AUTH_REQUIRED = /citizenship|work authorization|authorized to work|right to work|work permit|visa sponsorship|sponsorship required|employment visa|security clearance|(?:us|u\.s\.|united states)\s+(?:citizens?|nationals?|permanent residents?|green card holders?|ead holders?)|green card holders?|ead holders?|unable to sponsor|cannot sponsor|can't sponsor|no sponsorship|sponsorship (?:is )?(?:not|isn't) (?:available|provided|offered)|\bw-?2\b/i;
-const requiresWorkAuthorization = r => WORK_AUTH_REQUIRED.test([
-  r?.detail || '', ...(r?.questions || []), r?.meta?.head || '',
-].join(' '));
+// Where the user can legally work (from profile), lowercased for matching.
+const authorizedCountries = () => {
+  const p = getProfile();
+  const list = [p.country, ...(p.workAuth?.authorizedIn || []), ...(p.preferences?.locations || [])]
+    .filter(Boolean).map(s => String(s).toLowerCase());
+  return list.length ? list : ['pakistan'];
+};
+// True only when the role's text names a work-auth requirement for a country the user is
+// NOT authorized in. A requirement that matches the user's own country is answerable, not a wall.
+const requiresWorkAuthorization = r => {
+  const text = [r?.detail || '', ...(r?.questions || []), r?.meta?.head || '', r?.company || '', r?.role || '', r?.location || '']
+    .join(' ');
+  if (!WORK_AUTH_REQUIRED.test(text)) return false;
+  const lc = text.toLowerCase();
+  const auth = authorizedCountries();
+  // If the lead is anchored to a country the user IS authorized in (e.g. Pakistan), the
+  // auth question is answerable — do not hard-skip. Only skip when it points elsewhere.
+  if (auth.some(c => lc.includes(c))) return false;
+  return true;
+};
 // Login backoff: once a site needs login, stop hammering it — surface the banner and only
 // re-probe every few minutes. Returns true if we should SKIP acting on this site right now.
 const loginProbeAt = {};
@@ -207,12 +237,13 @@ async function scout() {
         if (!running()) break;
       } else { beat('scout', 'LinkedIn paused — waiting for you to log in'); }
 
-      // 2) The wider internet — HN, Reddit, public boards — EVERY loop (unbiased variety,
+      // 2) The wider internet — HN, public boards — EVERY loop (unbiased variety,
       //    no LinkedIn dependence, mostly email/form leads). Rotate one web source per loop
       //    so we cover all of them quickly without hammering any single site.
+      //    Reddit is intentionally excluded (per user request): its bot-check/redirect
+      //    flow is noisy and low-yield, so we skip it entirely.
       const web = [
         ['HN', () => hnHiring({ maxAgeHours: 240 })],
-        ['Reddit', () => redditHiring()],
         ['Boards', () => publicBoards({ maxAgeHours: 72 })],
       ];
       const [wname, wfn] = web[i % web.length];
@@ -266,7 +297,7 @@ async function mailer() {
     outcome('email_domain', (j.email.split('@')[1] || ''), { win: r.ok });
     say('mailer', `${r.ok ? '✉ SENT' : '✗'} ${j.email} (${j.role} @ ${j.company})`);
     writeDash();
-    await jitter(PACE.mailer);
+    await jitter(PACE.mailer); await extraCooldown();
    } catch (e) { say('mailer', 'error (skipping lead): ' + ((e && e.message) || e || '').toString().slice(0, 80)); await SLEEP(5000); }
   }
 }
@@ -363,6 +394,7 @@ async function applier() {
         log('portal_apply', j.company, j.role, r.finalUrl || target, r.result === 'submitted' ? 'ok' : r.result === 'needs_manual' ? 'manual' : r.result === 'no_form' ? 'skip' : 'fail', `${r.result}: ${r.detail}`);
         say('applier', `📋 ${r.result} → ${j.role} @ ${j.company}`);
       }
+      await extraCooldown();
     } catch (e) { say('applier', 'error ' + e.message.slice(0, 80)); setStatus(j.url, 'needs_manual', e.message.slice(0, 120)); }
     writeDash();
     if (appliedEasy) {
@@ -418,7 +450,7 @@ async function connector() {
     log('li_connect', j.company, j.role, j.poster_url, /^connected/.test(r.result) ? 'ok' : r.result === 'error' ? 'fail' : 'skip', `${r.result}: ${r.detail}`);
     say('connector', `🔗 ${r.result} → ${j.poster_name}`);
     writeDash();
-    await jitter(PACE.connector);
+    await jitter(PACE.connector); await extraCooldown();
    } catch (e) { say('connector', 'error (skipping lead): ' + ((e && e.message) || e || '').toString().slice(0, 80)); await SLEEP(5000); }
   }
 }
