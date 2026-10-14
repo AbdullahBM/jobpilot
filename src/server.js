@@ -118,13 +118,14 @@ const server = http.createServer(async (req, res) => {
       try { fs.writeFileSync(path.join(DATA, '.stop'), new Date().toISOString()); } catch {}
       return json(res, 200, { ok: true, detail: 'Stop requested — the worker will halt within a few seconds. Your logged-in Chrome stays open.' });
     }
-    // ── POST /api/consent → user opts in/out of auto-contribution + brain-loop ──
+    // ── POST /api/consent → user opts in/out of auto-contribution (code/doc push) ──
+    // NOTE: brain control is NOT consent-gated (it is always-on, core behavior). The only consent
+    // here is autoContribute — whether code/doc fixes are pushed to GitHub.
     if (req.method === 'POST' && url.pathname === '/api/consent') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
       // Only patch the key(s) actually present so one toggle never clobbers the other.
       const patch = {};
       if ('autoContribute' in body) patch.autoContribute = !!body.autoContribute;
-      if ('autoBrainLoop' in body) patch.autoBrainLoop = !!body.autoBrainLoop;
       const saved = updateProfile({ consent: patch });
       return json(res, 200, { ok: true, consent: saved.consent });
     }
@@ -278,12 +279,8 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
 </div>
 
 <div class="card">
-  <h2>🧠 Multi-brain evolution loop</h2>
-  <label style="display:flex;gap:8px;align-items:flex-start;color:#e2e8f0">
-    <input type="checkbox" id="autoBrainLoop" ${p.consent?.autoBrainLoop === true ? 'checked' : ''}>
-    Let my installed coding-agent CLIs (Codex · Grok · Claude · Gemini) take turns autonomously improving JobPilot's own tools.
-  </label>
-  <div class="sub" style="margin:8px 0 0">Optional and starts OFF. When ON, whichever coding CLIs are installed on this machine take turns reasoning over the agent's own failures (stuck forms, Easy Apply pages, etc.) and pushing <b>code/doc</b> fixes to the repo — so the agent keeps getting better on its own. <b>Strictly CLIs — no API keys are ever used or stored.</b> Hard-guarded: it can never commit your data, CV, or credentials. Turn off anytime from the dashboard.</div>
+  <h2>🧠 Brain-driven (always on)</h2>
+  <div class="sub" style="margin:-6px 0 0">JobPilot is driven by a reasoning brain: your installed coding-agent CLIs (Codex · Grok · Claude · Gemini) decide relevance, write outreach, and perform every apply/email/connect — the worker only gathers leads. This is core behavior and always on; it is <b>not</b> a setting. <b>Strictly CLIs — no API keys are ever used or stored.</b> Only pushing code/doc fixes to GitHub is consent-gated (toggle on the dashboard), and the brain can never commit your data or credentials.</div>
 </div>
 
 <div class="card">
@@ -377,7 +374,6 @@ $('save').onclick = async () => {
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
     preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), avoidCompanies: parseList($('avoidCompanies').value), locationScope: $('locationScope').value, allowTailoredCv: $('allowTailoredCv').checked },
     loggedInSources: parseList($('sources').value),
-    consent: { autoBrainLoop: $('autoBrainLoop').checked },
     limits: { maxEmailsPerDay: parseInt($('maxEmailsPerDay').value) || 0 },
     answers,
   };
