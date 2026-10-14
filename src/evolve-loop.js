@@ -84,7 +84,8 @@ export function startBackgroundEvolve({ syncMs = 2 * 60000, contribMs = 10 * 600
     return () => {};
   }
 
-  let lastSync = 0, lastContrib = 0, stopped = false;
+  let lastSync = 0, lastContrib = 0, lastLimitRefresh = 0, stopped = false;
+  const LIMIT_REFRESH_MS = 24 * 3600 * 1000; // research the Easy Apply limit once a day
 
   // AUTO-START the full worker lanes so hunting + applying + self-evolving loops continuously
   // (until Stop) without the agent re-prompting itself. Guarded against double-start + stop flag.
@@ -97,6 +98,17 @@ export function startBackgroundEvolve({ syncMs = 2 * 60000, contribMs = 10 * 600
     // Always keep the dashboard fresh (cheap, local, safe even alongside the worker).
     try { const { writeDash } = await import('./dashboard.js'); writeDash(); } catch {}
     try { const { writePlaybook } = await import('./evolve.js'); writePlaybook(); } catch {}
+
+    // ~daily: refresh the researched LinkedIn Easy Apply daily limit (hands-free, never raises
+    // the cap on a bad fetch). Skipped during CI boot tests.
+    if (!process.env.CI && Date.now() - lastLimitRefresh > LIMIT_REFRESH_MS) {
+      lastLimitRefresh = Date.now();
+      try {
+        const { maybeRefreshEasyApplyLimit } = await import('./limits.js');
+        const r = await maybeRefreshEasyApplyLimit();
+        if (r.refreshed) log(`refreshed Easy Apply limit → ${r.limit.dailyLimit}/day (cap ${r.limit.effectiveCap}, src ${r.limit.source})`);
+      } catch {}
+    }
 
     // Contribute/sync ONLY when the worker isn't the one doing it (avoid double-contribution),
     // only when the user has left self-contribution on, and never during CI boot tests.

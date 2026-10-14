@@ -145,6 +145,13 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
   `data/jobs.db` preserves history across runs and across different agents.
 - **Freshest first.** Prefer leads posted in the last 24h; the queues are already ordered that way.
 - **Respect limits** in the profile (daily caps, max attempts, timeouts). The worker enforces them.
+- **Easy Apply account-safety (standing instruction).** Over-applying via LinkedIn Easy Apply can get
+  the account restricted. Once a day, research the CURRENT LinkedIn Easy Apply daily submission limit
+  from the web (`research_easy_apply_limit`, or your own `web_research` + `set_easy_apply_limit`) and
+  keep `data/easyapply-limit.json` fresh. The worker STOPS Easy Apply at a safety buffer (default 80%)
+  of that limit — well before the real cap — and waits a randomized cooldown (default ~90–240s) after
+  each submission so applies never burst. A failed/implausible fetch never raises the cap. Current
+  conservative default: 50/day → stop at 40/day. See `src/limits.js`.
 - **Everything is the user's real browser** — email is their Gmail, applies use their sessions. No
   API keys, no SMTP.
 - **Never put the user's personal data in code or commits.** It lives only in `data/` (gitignored):

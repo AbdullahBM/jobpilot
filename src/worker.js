@@ -26,6 +26,7 @@ import { outcome, rankByUCB, learnedSkip, writePlaybook, domainOf } from './evol
 import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
 import { assessJob, cvAttachmentForJob } from './cv.js';
+import { getEasyApplyLimit, maybeRefreshEasyApplyLimit } from './limits.js';
 
 const DRY = process.env.DRY === '1';
 const DAILY = { email: 50, easy: 80, form: 30, connect: 18 };
@@ -275,13 +276,30 @@ let liCooldownUntil = 0;         // backoff when LinkedIn throttles
 let easyFailStreak = 0;          // consecutive non-apply Easy Apply outcomes
 async function applier() {
   let turn = 0;
+  // Refresh the researched Easy Apply daily limit on boot if it's stale (>24h). Fire-and-forget:
+  // never blocks the pipeline, never raises the cap on a bad fetch.
+  maybeRefreshEasyApplyLimit().catch(() => {});
   while (running()) {
+    let appliedEasy = false;     // set when an Easy Apply submission succeeds → longer cooldown
     const liCooling = Date.now() < liCooldownUntil || needsLogin('LinkedIn');
     // While LinkedIn is cooling down OR needs a login, only run the forms side (non-LinkedIn traffic).
     const doEasy = liCooling ? false : turn++ % 2 === 0;
     const chan = doEasy ? 'easy_apply' : 'form';
-    const capK = doEasy ? 'easy' : 'form', capType = doEasy ? 'li_easy_apply' : 'portal_apply';
-    if (capLeft(capK, capType) <= 0) { await SLEEP(60000); continue; }
+    const capType = doEasy ? 'li_easy_apply' : 'portal_apply';
+    if (doEasy) {
+      // Account-safety: stop Easy Apply at the 80% safety buffer of the (daily-refreshed) real
+      // LinkedIn limit — well before the actual cap — to avoid a restriction. Email/forms/connect
+      // keep running. The limit resets as the rolling 24h window clears, so we re-check hourly.
+      const { effectiveCap, dailyLimit, safetyBuffer } = getEasyApplyLimit();
+      const usedEasy = doneToday('li_easy_apply');
+      if (usedEasy >= effectiveCap) {
+        liCooldownUntil = Math.max(liCooldownUntil, Date.now() + 60 * 60000);
+        say('applier', `🛡️ Easy Apply safety cap: ${usedEasy}/${effectiveCap} (${Math.round(safetyBuffer * 100)}% of ~${dailyLimit}/day LinkedIn limit) — pausing Easy Apply ~1h to avoid a restriction. Email/forms/connect continue.`);
+        beat('applier', `Easy Apply safety cap ${usedEasy}/${effectiveCap} — paused ~1h`);
+        await SLEEP(5000);
+        continue;
+      }
+    } else if (capLeft('form', capType) <= 0) { await SLEEP(60000); continue; }
     const list = queue(chan, 15).filter(j => !alreadyApplied(j.company, j.role));
     // A learned form-domain skip must not leave a relevant lead silently stuck
     // as `new`; surface it for manual review and only apply the learned skip to
@@ -317,7 +335,7 @@ async function applier() {
           flagLogin('LinkedIn', 'LinkedIn security check — open LinkedIn and complete the check / re-login');
           continue; // don't burn this lead's attempt on a throttle
         }
-        if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; clearLogin('LinkedIn'); }
+        if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; clearLogin('LinkedIn'); if (r.result === 'applied') appliedEasy = true; }
         else if (r.result === 'no_easy_apply') { if (r.externalUrl) setFields(j.url, { channel: 'form', apply_url: r.externalUrl }); else setStatus(j.url, 'skipped', 'no Easy Apply / external'); }
         else if (r.result === 'needs_answers') {
           if (requiresWorkAuthorization(r)) setStatus(j.url, 'skipped', 'skipped: work authorization/citizenship requirement');
@@ -347,8 +365,24 @@ async function applier() {
       }
     } catch (e) { say('applier', 'error ' + e.message.slice(0, 80)); setStatus(j.url, 'needs_manual', e.message.slice(0, 120)); }
     writeDash();
-    await jitter(PACE.applier);
+    if (appliedEasy) {
+      // Longer, randomized cooldown AFTER a successful Easy Apply so submissions are spread out
+      // and never look like a fast, bot-like burst (a key restriction trigger).
+      const [a, b] = easyApplyCooldownRange();
+      const ms = Math.round(a + Math.random() * (b - a));
+      beat('applier', `cooldown ${Math.round(ms / 1000)}s after Easy Apply (anti-restriction pacing)`);
+      await SLEEP(ms);
+    } else {
+      await jitter(PACE.applier);
+    }
   }
+}
+
+/** Inter-submission Easy Apply cooldown [min,max] ms, profile-configurable. */
+function easyApplyCooldownRange() {
+  const v = getProfile().limits?.easyApplyCooldownMs;
+  if (Array.isArray(v) && v.length === 2 && v.every(n => Number.isFinite(n) && n >= 0) && v[1] >= v[0]) return v;
+  return [90000, 240000];
 }
 
 // ── CONNECTOR lane ──────────────────────────────────────────────────────────────

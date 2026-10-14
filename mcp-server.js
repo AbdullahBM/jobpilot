@@ -10,7 +10,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { initDB, upsertJobs, allJobs, setStatus, counts, logEmail, alreadyEmailed, alreadyApplied, allEmailsSent } from './src/tracker.js';
+import { initDB, upsertJobs, allJobs, setStatus, counts, logEmail, alreadyEmailed, alreadyApplied, allEmailsSent, doneToday } from './src/tracker.js';
 import { initAttempts, recordStep, attemptCount, canAttempt, recentSteps, stepStats } from './src/attempts.js';
 import { getProfile, updateProfile, profileGaps, isOnboarded } from './src/profile.js';
 import { cdpStatus, listTabs, verifyLogins } from './src/agent/browser.js';
@@ -22,6 +22,7 @@ import { connect as liConnect } from './src/mcp/connect.js';
 import { liPosts, liJobs, hnHiring, redditHiring, publicBoards } from './src/mcp/sources.js';
 import { initEvolve, pendingQuestions, allAnswers, learn, openEncounters, resolveEncounter, writePlaybook, strategyTable } from './src/evolve.js';
 import { buildQueries, buildListingQueries } from './src/mcp/queries.js';
+import { getEasyApplyLimit, setEasyApplyLimit, refreshEasyApplyLimitFromWeb } from './src/limits.js';
 import { webResearch, runScript, listScripts } from './src/mcp/runtime.js';
 import { sendViaGmail } from './src/mcp/gmail.js';
 import { subject as buildSubject, body as buildBody } from './src/scraper/email_content.js';
@@ -311,12 +312,38 @@ const TOOLS = [
     },
   },
 
+  // ───────── Account safety ─────────
+  {
+    name: 'research_easy_apply_limit',
+    description: "Research the CURRENT LinkedIn Easy Apply daily submission limit from the public web and store it (data/easyapply-limit.json). Over-applying can get an account restricted, so JobPilot stops Easy Apply at a safety buffer (default 80%) of this number. Safe: a failed/implausible fetch never raises the cap. Call this once a day. Returns the stored dailyLimit, effectiveCap (the 80% stop point), source, and candidates seen.",
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => ok(await refreshEasyApplyLimitFromWeb()),
+  },
+  {
+    name: 'set_easy_apply_limit',
+    description: "Set the LinkedIn Easy Apply daily limit you discovered via your own web_research (e.g. the agent read that LinkedIn currently caps Easy Apply at ~50/day). JobPilot stops Easy Apply at safetyBuffer×dailyLimit. dailyLimit is sanity-bounded to [20,200] and the effective cap is capped at 80 regardless. Returns the stored limit + the 80% effectiveCap.",
+    inputSchema: { type: 'object', properties: { dailyLimit: { type: 'number' }, safetyBuffer: { type: 'number', description: 'fraction in (0,1], default 0.8' }, source: { type: 'string' } }, required: ['dailyLimit'] },
+    handler: async ({ dailyLimit, safetyBuffer, source }) => ok(setEasyApplyLimit({ dailyLimit, safetyBuffer, source: source || 'agent web_research' })),
+  },
+
   // ───────── Observability ─────────
   {
     name: 'get_stats',
-    description: 'Full dashboard data: job counts by status/source/portal, emails sent, applications, step history, attempt counts, timeouts. Use to report progress to the user.',
+    description: 'Full dashboard data: job counts by status/source/portal, emails sent, applications, step history, attempt counts, timeouts, and the Easy Apply safety limit (daily limit, 80% safety cap, today\'s Easy Apply count). Use to report progress to the user.',
     inputSchema: { type: 'object', properties: {} },
-    handler: async () => ok({ jobs: counts(), steps: stepStats(), emailsSent: allEmailsSent().length, recentSteps: recentSteps(30) }),
+    handler: async () => {
+      const lim = getEasyApplyLimit();
+      const easyToday = doneToday('li_easy_apply');
+      return ok({
+        jobs: counts(), steps: stepStats(), emailsSent: allEmailsSent().length, recentSteps: recentSteps(30),
+        easyApply: {
+          dailyLimit: lim.dailyLimit, safetyBuffer: lim.safetyBuffer, effectiveCap: lim.effectiveCap,
+          usedToday: easyToday, remaining: Math.max(0, lim.effectiveCap - easyToday),
+          source: lim.source, checkedAt: lim.checkedAt, stale: lim.stale,
+          paused: easyToday >= lim.effectiveCap,
+        },
+      });
+    },
   },
   {
     name: 'open_onboarding',

@@ -301,6 +301,11 @@ jobpilot/
   sensitive-path tripwire abort any push that would include `data/`, `.env`, drafts, logs,
   screenshots or the DB. Toggle it off from the dashboard anytime.
 - **Dedup is permanent**, and daily caps + attempt limits are enforced and recorded.
+- **Easy Apply is account-safe.** LinkedIn restricts accounts that over-apply, so JobPilot keeps a
+  daily-refreshed estimate of the real Easy Apply limit (conservative default 50/day) and **stops at
+  an 80% safety buffer** (e.g. 40/day) — then waits a randomized cooldown (~90–240s) after each
+  submission so applications never look like a bot-like burst. A bad or offline refresh never raises
+  the cap. Email, forms, and connect keep running when Easy Apply is paused.
 
 ---
 
