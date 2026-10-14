@@ -83,6 +83,26 @@ async function consent(on){
   }
 }
 
+// ── Multi-brain evolution loop toggle ─────────────────────────────────────────
+async function brainLoop(on){
+  const base = apiBase();
+  const label = on
+    ? 'Enable the multi-brain evolution loop?\\n\\nYour installed coding-agent CLIs (Codex, Grok, Claude, Gemini) will take turns autonomously reasoning over failures and pushing code/doc fixes to the repo. Strictly CLIs — no API keys are ever used. Hard-guarded: never your data or credentials.'
+    : 'Turn off the multi-brain evolution loop? Installed brains will stop auto-improving the agent.';
+  if (!confirm(label)) return;
+  try {
+    const r = await fetch(base + '/api/consent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoBrainLoop: on })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    location.reload();
+  } catch(e) {
+    alert('Could not update multi-brain loop consent — open the dashboard from the server URL (' + base + ').\\n\\nError: ' + e.message);
+  }
+}
+
 // Explicit approval gate for job-specific CV drafts/uploads. Disabled by default.
 async function tailoredConsent(on){
   const base = apiBase();

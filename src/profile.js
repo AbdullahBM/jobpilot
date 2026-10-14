@@ -109,6 +109,11 @@ const DEFAULT_PROFILE = {
   consent: {
     autoContribute: true,   // push code/doc improvements + file issues to the public repo automatically
     selfEvolveShare: true,  // share anonymized evolution insights upstream
+    // Multi-brain self-evolution loop: let INSTALLED coding-agent CLIs (codex, grok, claude,
+    // gemini, …) take turns reasoning over open encounters and pushing code/doc fixes UNATTENDED.
+    // Strictly CLIs — never API keys. OFF by default: it's a bigger step than autoContribute
+    // because external brains commit/PR on their own. Opt in from the dashboard or onboarding.
+    autoBrainLoop: false,
   },
 
   _onboarded: false,

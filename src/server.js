@@ -118,10 +118,14 @@ const server = http.createServer(async (req, res) => {
       try { fs.writeFileSync(path.join(DATA, '.stop'), new Date().toISOString()); } catch {}
       return json(res, 200, { ok: true, detail: 'Stop requested — the worker will halt within a few seconds. Your logged-in Chrome stays open.' });
     }
-    // ── POST /api/consent → user opts in/out of auto-contribution ──────────────
+    // ── POST /api/consent → user opts in/out of auto-contribution + brain-loop ──
     if (req.method === 'POST' && url.pathname === '/api/consent') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
-      const saved = updateProfile({ consent: { autoContribute: !!body.autoContribute } });
+      // Only patch the key(s) actually present so one toggle never clobbers the other.
+      const patch = {};
+      if ('autoContribute' in body) patch.autoContribute = !!body.autoContribute;
+      if ('autoBrainLoop' in body) patch.autoBrainLoop = !!body.autoBrainLoop;
+      const saved = updateProfile({ consent: patch });
       return json(res, 200, { ok: true, consent: saved.consent });
     }
     // ── POST /api/tailored-cv-consent → explicit approval gate ────────────────
