@@ -81,6 +81,18 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         await ta.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
         if (await ta.isVisible().catch(() => false)) { await ta.fill(note); await SLEEP(400); usedNote = true; }
         else if (process.env.DEBUG_CONN) console.log('textarea not visible after addNote');
+
+        // LinkedIn opens a Premium upsell instead of the note editor once the
+        // free custom-note quota is exhausted. Dismiss it and continue with a
+        // normal invitation; a connection request should not fail just because
+        // an optional note is unavailable.
+        const premiumText = await page.locator('body').innerText().catch(() => '');
+        if (/out of free custom notes|send unlimited personalized invites|restart premium/i.test(premiumText)) {
+          usedNote = false;
+          const dismiss = page.getByRole('button', { name: /dismiss|close/i }).last();
+          await dismiss.click({ timeout: 2500 }).catch(() => page.keyboard.press('Escape').catch(() => {}));
+          await SLEEP(800);
+        }
       } else if (process.env.DEBUG_CONN) console.log('addNote not visible');
     }
     if (dryRun) { await page.keyboard.press('Escape').catch(() => {}); await SLEEP(400); await page.getByRole('button', { name: /discard/i }).first().click({ timeout: 2500 }).catch(() => {}); await page.close(); return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached send' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' }; }
