@@ -94,7 +94,8 @@ const notLoggedIn = d => /not logged in|log into|authwall|sign in|please log in/
 // hard skips instead of parking them for manual answers.
 const WORK_AUTH_REQUIRED = /citizenship|work authorization|authorized to work|right to work|work permit|visa sponsorship|sponsorship required|employment visa|security clearance|(?:us|u\.s\.|united states)\s+(?:citizens?|nationals?|permanent residents?|green card holders?|ead holders?)|green card holders?|ead holders?|unable to sponsor|cannot sponsor|can't sponsor|no sponsorship|sponsorship (?:is )?(?:not|isn't) (?:available|provided|offered)|\bw-?2\b/i;
 const requiresWorkAuthorization = r => WORK_AUTH_REQUIRED.test([
-  r?.detail || '', ...(r?.questions || []), r?.meta?.head || '',
+  r?.detail || '', ...(r?.questions || []), r?.meta?.head || '', r?.description || '',
+  r?.location || '', r?.salary || '', r?.notes || '', r?.role || '', r?.company || '',
 ].join(' '));
 // Login backoff: once a site needs login, stop hammering it — surface the banner and only
 // re-probe every few minutes. Returns true if we should SKIP acting on this site right now.
@@ -118,6 +119,10 @@ function queue(channel, limit = 25) {
   const p = getProfile();
   return candidates.filter(j => {
     if (isExcludedCompany(`${j.company || ''} ${j.role || ''} ${j.description || ''}`)) return false;
+    if (requiresWorkAuthorization(j)) {
+      setStatus(j.url, 'skipped', 'skipped: work authorization/citizenship requirement');
+      return false;
+    }
     const cv = assessJob(j, p);
     if (!cv.roleAligned) {
       setFields(j.url, {
