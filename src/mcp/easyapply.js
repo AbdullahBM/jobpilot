@@ -157,10 +157,34 @@ async function checkOption(page, dataJa, optText, groupName, grpIdx = -1) {
       if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
     }
   };
-  // 1) click the label for the captured id, verify fresh.
+  // NATIVE CDP click at the label's center — a REAL OS-level mouse event that React cannot
+  // distinguish from a human click. This is what finally lands on 0×0 inputs whose synthetic
+  // (JS/Playwright trusted) clicks get swallowed by LinkedIn's custom checkbox widget.
+  const cdpClickLabel = async () => {
+    // Resolve the label element for the option, re-reading live (ids/handles may be stale).
+    let lbl = page.locator(`label[for="${snap.id}"]`).first();
+    if (!(await lbl.count().catch(() => 0)) && optText) {
+      lbl = page.locator('label').filter({ hasText: new RegExp(`^\\s*${optText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
+    }
+    const box = await lbl.boundingBox().catch(() => null);
+    if (!box) return false;
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    try {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+      await cdp.detach().catch(() => {});
+    } catch { return false; }
+    return true;
+  };
+
+  // 1) native CDP click at the label — most reliable for 2026 custom checkboxes.
+  if (await cdpClickLabel()) { await new Promise(r => setTimeout(r, 450)); if (await groupChecked()) return true; }
+  // 2) Playwright trusted click on the label for the captured id, verify fresh.
   await clickById(); await new Promise(r => setTimeout(r, 400));
   if (await groupChecked()) return true;
-  // 2) click a label/option carrying the visible option text, verify fresh.
+  // 3) click a label/option carrying the visible option text, verify fresh.
   if (optText) {
     const byText = page.locator(`label, [role="radio"], [role="checkbox"]`).filter({ hasText: new RegExp(`^\\s*${optText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
     if (await byText.count().catch(() => 0)) { await byText.click({ force: true, timeout: 2000 }).catch(() => {}); await new Promise(r => setTimeout(r, 400)); if (await groupChecked()) return true; }
