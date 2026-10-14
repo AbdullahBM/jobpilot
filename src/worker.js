@@ -114,7 +114,7 @@ function queue(channel, limit = 25) {
      AND (posted_at='' OR posted_at IS NULL OR posted_at>=?)
      ORDER BY ${channel === 'email' ? "CASE WHEN source='linkedin_post' THEN 0 ELSE 1 END," : ''}
        CASE WHEN posted_at='' OR posted_at IS NULL THEN 1 ELSE 0 END, posted_at DESC, relevance DESC LIMIT ?`,
-    [channel, MIN_REL[channel], minPosted, limit * 3]);
+    [channel, MIN_REL[channel], minPosted, limit * 3]).filter(locationAllowed);
   const p = getProfile();
   return candidates.filter(j => {
     if (isExcludedCompany(`${j.company || ''} ${j.role || ''} ${j.description || ''}`)) return false;
@@ -142,12 +142,27 @@ function jobCvAttachment(j, p) {
   return attachment;
 }
 
+// Country scope is an action gate, not just a search hint: old/global queue entries and
+// broad public-board results must never leak into outreach or applications.
+function locationAllowed(job) {
+  const profile = getProfile();
+  if (profile.preferences?.locationScope !== 'country') return true;
+  const country = String(profile.country || '').trim().toLowerCase();
+  const location = String(job.location || '').trim().toLowerCase();
+  if (!country || !location) return false; // conservative: unknown location is not in scope
+  if (location.includes(country)) return true;
+  // LinkedIn and boards often abbreviate a Pakistan location to its city.
+  if (country === 'pakistan') return /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/.test(location);
+  return false;
+}
+
 // ── ingest helper ────────────────────────────────────────────────────────────
 function ingest(leads) {
+  const scoped = leads.filter(locationAllowed);
   const excluded = l => isExcludedCompany(`${l.company || ''} ${l.role || ''} ${l.description || ''}`);
-  const good = leads.filter(l => !l.skip && !l.alreadyApplied && !excluded(l));
-  const skip = leads.filter(l => (l.skip || excluded(l)) && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped', skipWhy: l.skipWhy || 'company excluded by profile' }));
-  const applied = leads.filter(l => l.alreadyApplied).map(l => ({ ...l, status: 'applied' }));
+  const good = scoped.filter(l => !l.skip && !l.alreadyApplied && !excluded(l));
+  const skip = scoped.filter(l => (l.skip || excluded(l)) && !l.alreadyApplied).map(l => ({ ...l, status: 'skipped', skipWhy: l.skipWhy || 'company excluded by profile' }));
+  const applied = scoped.filter(l => l.alreadyApplied).map(l => ({ ...l, status: 'applied' }));
   const n = upsertJobs([...good, ...skip, ...applied]);
   for (const l of skip) { const j = getJob(l.url); if (j && j.status === 'skipped' && !j.notes) setFields(l.url, { notes: l.skipWhy }); }
   return { n, email: good.filter(l => l.email).length };
@@ -192,7 +207,8 @@ async function scout() {
       if (i % 2 === 0 && !loginBackoff('LinkedIn')) {
         const jq = jobQ[0];
         beat('scout', `LI jobs: ${jq}`);
-        for (const geoId of ['92000000', '101022442']) { // Worldwide, Pakistan
+        const geoIds = getProfile().preferences?.locationScope === 'country' ? ['101022442'] : ['92000000', '101022442'];
+        for (const geoId of geoIds) { // Pakistan only in country scope; otherwise worldwide + Pakistan
           const rj = await liJobs(jq, { easyOnly: true, tpr: 86400, geoId, pages: 1 });
           if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); clearLogin('LinkedIn'); }
           else if (notLoggedIn(rj.detail)) flagLogin('LinkedIn', 'Please log into LinkedIn in the JobPilot Chrome window — scraping is paused until you do');
@@ -330,6 +346,17 @@ async function connector() {
     if (DRY) { say('connector', `DRY → ${j.poster_name}`); await jitter(PACE.connector); continue; }
     bumpAttempt(j.url);
     beat('connector', `🔗 ${j.poster_name}`);
+    if (j.poster_url) {
+      const { linkedinDM } = await import('./mcp/apply.js');
+      const dmResult = await linkedinDM({ profileUrl: j.poster_url, role: j.role, company: j.company }).catch(() => null);
+      if (dmResult && dmResult.result === 'dm_sent') {
+        setStatus(j.url, 'connected', 'DM sent'); logConnect(j.poster_url, j.poster_name, j.company, j.role, '', 'dm_sent'); clearLogin('LinkedIn');
+        log('li_connect', j.company, j.role, j.poster_url, 'ok', 'dm_sent');
+        say('connector', `💬 DM sent → ${j.poster_name}`);
+        writeDash(); await jitter(PACE.connector); continue;
+      }
+    }
+
     const r = await connect({ profileUrl: j.poster_url, posterName: j.poster_name, role: j.role, company: j.company });
     if (/^connected/.test(r.result)) { setStatus(j.url, 'connected', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, r.note || '', 'connected'); clearLogin('LinkedIn'); }
     else if (/already/.test(r.result)) { setStatus(j.url, 'skipped', r.detail); logConnect(j.poster_url, j.poster_name, j.company, j.role, '', 'pending'); }

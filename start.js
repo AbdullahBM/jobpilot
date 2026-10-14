@@ -105,11 +105,14 @@ async function main() {
   // connection) ends normally; a CRASH (non-zero / signal) is auto-restarted with backoff
   // so the server is never left down while the agent/CLI is still using it.
   let restarts = 0;
+  let child = null;
   const startServer = () => {
     const srv = spawn('node', [path.join(__dir, 'mcp-server.js')], {
       cwd: __dir, stdio: ['inherit', 'inherit', 'inherit'],
     });
+    child = srv;
     srv.on('exit', (code, signal) => {
+      child = null;
       if (code === 0) { process.exit(0); return; }            // clean shutdown — honor it
       restarts++;
       if (restarts > 20) { log(`MCP server crashed ${restarts}× — giving up.`); process.exit(code ?? 1); return; }
@@ -118,6 +121,10 @@ async function main() {
       setTimeout(startServer, wait);
     });
   };
+  // When agent closes stdin, kill the child MCP server so it can write the stop flag and exit
+  process.stdin.on('end', () => { if (child) child.kill('SIGTERM'); });
+  process.on('SIGINT',  () => { if (child) child.kill('SIGTERM'); });
+  process.on('SIGTERM', () => { if (child) child.kill('SIGTERM'); });
   startServer();
 }
 

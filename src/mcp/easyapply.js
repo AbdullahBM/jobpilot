@@ -240,6 +240,20 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
       const cont = page.getByRole('button', { name: /continue applying|^continue$/i }).first();
       if (await cont.isVisible().catch(() => false)) { await cont.click(); await dlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {}); }
     }
+    // If we matched a "Job search safety reminder" dialog (no real form fields), dismiss it and re-find the real apply dialog.
+    if (await dlg.isVisible().catch(() => false)) {
+      const dlgText = await dlg.innerText().catch(() => '');
+      if (/safety reminder|safety tips|research the company|report suspicious/i.test(dlgText)) {
+        const contBtn = dlg.getByRole('link', { name: /continue applying/i }).or(dlg.getByRole('button', { name: /continue applying/i })).first();
+        if (await contBtn.isVisible().catch(() => false)) {
+          await contBtn.click().catch(() => {});
+          await SLEEP(1500);
+          // re-select the actual apply dialog (not the safety one)
+          dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit/i }) }).first();
+          await dlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+        }
+      }
+    }
     if (!(await dlg.isVisible().catch(() => false))) {
       await encounter('easy_apply', 'dialog did not open', { url, page });
       await page.close(); return { ok: false, result: 'error', detail: 'Easy Apply dialog did not open', meta };
