@@ -247,19 +247,22 @@ async function scout() {
         if (!running()) break;
       } else { beat('scout', 'LinkedIn paused — waiting for you to log in'); }
 
-      // 2) The wider internet — HN, public boards — EVERY loop (unbiased variety,
-      //    no LinkedIn dependence, mostly email/form leads). Rotate one web source per loop
-      //    so we cover all of them quickly without hammering any single site.
-      //    Reddit is intentionally excluded (per user request): its bot-check/redirect
-      //    flow is noisy and low-yield, so we skip it entirely.
+      // 2) The wider internet — HN, public boards — run ALL of them EVERY loop (unbiased variety,
+      //    no LinkedIn dependence, mostly email/form leads). This keeps email/form leads flowing
+      //    even while LinkedIn is cooling/paused, so the email channel never starves.
+      //    Reddit is intentionally excluded by default (per user request): its bot-check/redirect
+      //    flow is noisy and low-yield. Un-starvation comes from HN/Boards getting more turns,
+      //    never from re-enabling Reddit.
       const web = [
         ['HN', () => hnHiring({ maxAgeHours: 240 })],
         ['Boards', () => publicBoards({ maxAgeHours: 72 })],
       ];
-      const [wname, wfn] = web[i % web.length];
-      beat('scout', 'web: ' + wname);
-      try { const rr = await wfn(); const { n, email } = ingest(rr.leads); say('scout', `${wname} +${n} (${email} email)`); } catch (e) { say('scout', `${wname} err ${e.message.slice(0, 60)}`); }
-      await jitter(PACE.scout);
+      for (const [wname, wfn] of web) {
+        beat('scout', 'web: ' + wname);
+        try { const rr = await wfn(); const { n, email } = ingest(rr.leads); say('scout', `${wname} +${n} (${email} email)`); } catch (e) { say('scout', `${wname} err ${e.message.slice(0, 60)}`); }
+        await jitter(PACE.scout);
+        if (!running()) break;
+      }
       if (!running()) break;
 
       // 3) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
