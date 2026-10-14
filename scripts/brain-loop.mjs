@@ -1,104 +1,68 @@
-// scripts/brain-loop.mjs — the REASONING loop (the "brain in a loop").
+// scripts/brain-loop.mjs — THE BRAIN. The always-on reasoning driver the whole pipeline runs under.
 //
-// JobPilot's worker is the HANDS (scrape/apply/email). This runner is how the BRAIN keeps
-// improving the agent itself: it repeatedly invokes whichever coding-agent CLIs are installed —
-// Codex, Grok, Claude, Gemini — in headless mode, handing each a standing self-evolution prompt:
-//   "read evolution_report → fix the top open encounter in code → resolve_encounter → contribute".
+// ARCHITECTURE (the agreed inversion): the worker is NOT a peer that applies on its own. The worker
+// runs DATA-ONLY (scrape leads into the DB + keep the dashboard fresh). THIS loop is the brain that
+// sits on top: every tick it reasons over the fresh leads and performs the applies / emails /
+// connects itself through the MCP tools, and also reasons over open encounters to improve the
+// agent's own tools. So every job action goes THROUGH the brain — nothing acts without it.
 //
-// DESIGN (per the three decisions):
-//   1. ROTATION  — brains take turns, one dispatch per tick, round-robin. No parallel git
-//                  collisions; the value is diversity of reasoning, not raw throughput. Each fix is
-//                  attributable to the brain that made it.
-//   2. CONSENT   — only runs when profile.consent.autoBrainLoop === true (dashboard + onboarding
-//                  toggle, OFF by default). The whole point is unattended code pushes, so it is gated.
-//   3. TRIGGER   — event-driven PRIMARY (only dispatch when there are open encounters / pending
-//                  questions to reason about) + a slow heartbeat SAFETY NET so it can't stall.
+// It drives whichever coding-agent CLIs are installed — Codex, Grok, Claude, Gemini — in headless
+// mode, round-robin (rotation), handing each a batch of real pending leads + the top encounter.
 //
-// STRICTLY CLIs — NEVER API KEYS. This runner only shells out to already-installed, already-logged-in
-// CLIs. It never reads, writes, sets, or passes an API key, and it refuses to inject any *_API_KEY
-// into the child environment.
+// BRAIN CONTROL IS ALWAYS-ON AND NOT CONSENT-GATED. Brain-in-control is the core idea of the
+// project, not an optional feature — like self-evolution, it is never bypassed. The ONLY consent
+// that still applies is `consent.autoContribute` (whether CODE/DOCS get pushed to GitHub), which is
+// about where code leaves the machine, NOT about whether the brain reasons and acts. The loop stops
+// only on the user's explicit Stop (data/.stop) — same contract as the never-stop worker.
 //
-// Stops on the same data/.stop flag the worker uses, so the dashboard ⏹ Stop halts the brain too.
+// STRICTLY CLIs — NEVER API KEYS. Only shells out to already-installed, already-logged-in CLIs; it
+// strips every *_API_KEY / *_TOKEN from the child env so a brain can only run on its own CLI login.
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { fileURLToPath } from 'url';
 import { DATA } from '../src/config.js';
 import { getProfile } from '../src/profile.js';
 import { initDB, rows } from '../src/tracker.js';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STOPFILE = path.join(DATA, '.stop');
 const STATEFILE = path.join(DATA, 'brain-loop-state.json');
 
-const HEARTBEAT_MS = 15 * 60 * 1000;   // safety-net cadence: re-check at least every 15 min
-const POLL_MS = 30 * 1000;             // how often we check the stop flag / backlog
-const TURN_TIMEOUT_MS = 20 * 60 * 1000; // hard cap on a single brain's turn
+const IDLE_HEARTBEAT_MS = 10 * 60 * 1000; // when there's no work, still re-check at least this often
+const POLL_MS = 20 * 1000;                // how often we check the stop flag / backlog
+const TURN_TIMEOUT_MS = 25 * 60 * 1000;   // hard cap on a single brain's turn
+const LEADS_PER_TURN = 8;                 // how many fresh leads to hand the brain each turn
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 const stopped = () => fs.existsSync(STOPFILE);
 const log = (...a) => console.log(`[${new Date().toLocaleTimeString('en-GB')}] brain-loop:`, ...a);
 
-// ── The brains. Each entry is a CLI we KNOW how to drive headlessly. We only use the ones that
-//    are actually on PATH — absent brains are silently skipped (installation is not required). ──
+// ── Installed-brain registry. Absent brains are skipped; installation is not required. ──
+// `stdin:true` → prompt delivered on STDIN (codex reads it when the prompt arg is '-'). `stdin:false`
+// → prompt passed as a single argv entry (grok/gemini headless need it inline). Either way we never
+// place the prompt on a shell command line, so the long multi-line prompt is never mangled.
 const BRAINS = [
-  {
-    name: 'codex',
-    bin: 'codex',
-    // codex exec = non-interactive. --cd sets the repo. workspace-write sandbox lets it edit files
-    // and run git, with approvals routed automatically (no TTY prompts).
-    args: prompt => ['exec', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-C', ROOT, prompt],
-  },
-  {
-    name: 'grok',
-    bin: 'grok',
-    // grok -p = single-turn headless; --cwd sets the repo; --no-auto-update for scripted runs.
-    args: prompt => ['--no-auto-update', '--cwd', ROOT, '-p', prompt],
-  },
-  {
-    name: 'claude',
-    bin: 'claude',
-    // claude -p = print/headless. Permission mode kept non-interactive for unattended edits.
-    args: prompt => ['-p', '--permission-mode', 'acceptEdits', prompt],
-  },
-  {
-    name: 'gemini',
-    bin: 'gemini',
-    // gemini -p = headless prompt.
-    args: prompt => ['-p', prompt],
-  },
+  { name: 'codex',  bin: 'codex',  stdin: true,  args: () => ['exec', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-C', ROOT, '-'] },
+  { name: 'grok',   bin: 'grok',   stdin: false, args: p => ['--no-auto-update', '--cwd', ROOT, '-p', p] },
+  { name: 'claude', bin: 'claude', stdin: false, args: p => ['-p', '--permission-mode', 'acceptEdits', p] },
+  { name: 'gemini', bin: 'gemini', stdin: false, args: p => ['-p', p] },
 ];
 
-// The standing self-evolution instruction handed to each brain. It tells the brain to use the
-// JobPilot MCP tools (which its own config wires up) and to follow the AGENTS.md contribution loop.
-const PROMPT = [
-  'You are one of several coding-agent brains improving the JobPilot repo you are running inside.',
-  'Do ONE focused self-evolution iteration, then stop:',
-  '1. Read the evolution report (the evolution_report MCP tool, or data/evolution/PLAYBOOK.md).',
-  '2. Pick the single highest-impact OPEN encounter (a stuck form / Easy Apply page / connect flow / exception).',
-  '3. Open its saved screenshot + HTML snapshot under data/evolution/ and diagnose the ROOT cause.',
-  '4. Fix it in the relevant module (src/mcp/easyapply.js, forms.js, connect.js, sources.js, gmail.js, …).',
-  '   You may modify, optimize, or CREATE NEW tools/modules — that liberty is the whole point.',
-  '5. Verify your change at least parses (node --check) and keeps the worker booting.',
-  '6. resolve_encounter it with a note of what you changed, then run the contribute flow',
-  '   (contribute_improvements) so the fix lands as a PR / merge per AGENTS.md.',
-  'Rules: never touch data/, .env*, uploads/, or credentials. Keep the change small and correct.',
-  'Do not start long-running processes. When your one iteration is done, exit.',
-].join('\n');
-
-function onPath(bin) {
-  const exts = process.platform === 'win32' ? ['.cmd', '.ps1', '.exe', '.bat', ''] : [''];
+function onPath(bin) { return !!resolveBin(bin); }
+// Resolve a CLI to its concrete path (incl. Windows .cmd/.exe/.ps1 shims) so we can spawn WITHOUT
+// shell:true — which is what mangled the multi-line prompt and triggered the arg-escaping warning.
+function resolveBin(bin) {
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe', '.bat', '.ps1', ''] : [''];
   const dirs = (process.env.PATH || '').split(path.delimiter);
   for (const d of dirs) for (const e of exts) {
-    try { if (d && fs.existsSync(path.join(d, bin + e))) return true; } catch {}
+    try { const full = path.join(d, bin + e); if (d && fs.existsSync(full)) return full; } catch {}
   }
-  return false;
+  return null;
 }
-
 function installedBrains() { return BRAINS.filter(b => onPath(b.bin)); }
 
-// Guard: strip any *_API_KEY / *_TOKEN from the child env so brains run purely on their own
-// CLI login (subscription), never on an API key this process could leak in.
+// Strip API keys/tokens so a brain runs purely on its own CLI login (subscription), never a key.
 function sanitizedEnv() {
   const env = { ...process.env };
   for (const k of Object.keys(env)) {
@@ -107,21 +71,88 @@ function sanitizedEnv() {
   return env;
 }
 
+// ── What is there to reason about? Fresh leads to act on + open encounters to fix. ──
+function freshLeads(limit = LEADS_PER_TURN) {
+  // Newest first, same priority spirit as the worker queue (LinkedIn-post email leads first).
+  try {
+    return rows(
+      `SELECT role, company, channel, email, apply_url, url, poster_url, poster_name, relevance, source
+       FROM jobs WHERE status='new' AND COALESCE(attempts,0) < 3
+       ORDER BY CASE WHEN channel='email' AND source='linkedin_post' THEN 0 ELSE 1 END,
+                CASE WHEN posted_at='' OR posted_at IS NULL THEN 1 ELSE 0 END, posted_at DESC, relevance DESC
+       LIMIT ?`, [limit]);
+  } catch { return []; }
+}
 function backlog() {
-  let encounters = 0, questions = 0;
+  let encounters = 0, questions = 0, leads = 0;
   try { encounters = rows(`SELECT COUNT(*) n FROM encounters WHERE status IN ('open','regressed')`)[0]?.n || 0; } catch {}
   try { questions = rows(`SELECT COUNT(*) n FROM answers WHERE pending=1`)[0]?.n || 0; } catch {}
-  return { encounters, questions, total: encounters + questions };
+  try { leads = rows(`SELECT COUNT(*) n FROM jobs WHERE status='new' AND COALESCE(attempts,0) < 3`)[0]?.n || 0; } catch {}
+  return { encounters, questions, leads, total: encounters + questions + leads };
+}
+
+// Build the standing instruction. The brain OWNS each application: it decides relevance, writes the
+// outreach, picks the channel, and performs the action through the MCP tools. It also fixes the top
+// tool-failure. The actual leads are embedded so the brain acts on real work, not an abstract task.
+function buildPrompt(leads) {
+  const leadLines = leads.length
+    ? leads.map((j, i) => `  ${i + 1}. [${j.channel || '?'}] ${j.role || '(role?)'} @ ${j.company || '(company?)'}`
+        + `${j.email ? ' · email ' + j.email : ''}${j.apply_url || j.url ? ' · ' + (j.apply_url || j.url) : ''}`
+        + `${j.poster_url ? ' · poster ' + j.poster_url : ''}`).join('\n')
+    : '  (none right now)';
+  return [
+    'You are the BRAIN driving JobPilot inside its own repo. The worker only scrapes; YOU perform every',
+    'application by reasoning and calling the MCP tools. Do ONE productive cycle, then exit.',
+    '',
+    'PART A — act on these fresh leads (judge each; skip ones that do not fit the profile):',
+    leadLines,
+    '',
+    'For each lead you judge relevant, act via the right MCP tool, after check_already_actioned:',
+    '  • has an email → send_email (CV auto-attaches; omit subject/body to use the proven template).',
+    '  • channel easy_apply / a LinkedIn job → apply_linkedin_easy.',
+    '  • channel form / an ATS or job-board url → apply_portal.',
+    '  • only a poster and no email/form → linkedin_connect with a short personalized note.',
+    'Use set_job_status to record skips with a reason. Respect the profile (roles, skip list, salary,',
+    'work-auth). Email is uncapped — pace yourself sensibly; do not burst Easy Apply (account safety).',
+    '',
+    'PART B — improve one tool: read evolution_report, pick the top OPEN encounter, open its',
+    'screenshot+HTML under data/evolution/, fix the root cause in the relevant module (easyapply.js,',
+    'forms.js, connect.js, sources.js, gmail.js, …) — you may modify or CREATE tools — verify it parses',
+    '(node --check), then resolve_encounter and run contribute_improvements so it lands per AGENTS.md.',
+    '',
+    'Rules: never touch data/, .env*, uploads/, or credentials. Never re-email/re-apply/re-connect',
+    '(check_already_actioned first). Do not start long-running processes. When the cycle is done, exit.',
+  ].join('\n');
 }
 
 function readState() { try { return JSON.parse(fs.readFileSync(STATEFILE, 'utf8')); } catch { return { turn: 0, history: [] }; } }
 function writeState(s) { try { fs.writeFileSync(STATEFILE, JSON.stringify(s, null, 2)); } catch {} }
+function beat(phase, extra = {}) {
+  const s = readState();
+  s.phase = phase; s.ts = new Date().toISOString(); Object.assign(s, extra);
+  writeState(s);
+}
 
-function runBrain(brain) {
+function runBrain(brain, prompt) {
   return new Promise(resolve => {
     log(`▶ dispatching ${brain.name} …`);
-    const child = spawn(brain.bin, brain.args(PROMPT), {
-      cwd: ROOT, env: sanitizedEnv(), stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32',
+    const full = resolveBin(brain.bin) || brain.bin;
+    const ext = (full.match(/\.(cmd|bat|ps1|exe)$/i) || [, ''])[1].toLowerCase();
+
+    // Build the real command WITHOUT ever putting the prompt on a shell command line:
+    //   • .exe (native, e.g. grok) → spawn directly, shell:false. argv (incl. a multi-line prompt
+    //     arg) is passed to the process verbatim by the OS — no shell to mangle it.
+    //   • .ps1 shim (e.g. codex) → run via pwsh -File; codex takes its prompt on STDIN ('-'), so
+    //     no prompt ever appears as an arg anyway.
+    //   • .cmd/.bat shim → run via cmd /c; prompt (if arg-mode) is passed as a separate argv entry.
+    let cmd, argv;
+    const promptArgs = brain.args(brain.stdin ? '-' : prompt);  // for stdin brains, '-' is ignored by our args()
+    if (ext === 'ps1') { cmd = 'pwsh'; argv = ['-NoProfile', '-File', full, ...promptArgs]; }
+    else if (ext === 'cmd' || ext === 'bat') { cmd = 'cmd'; argv = ['/c', full, ...promptArgs]; }
+    else { cmd = full; argv = promptArgs; }   // .exe or extensionless → direct
+
+    const child = spawn(cmd, argv, {
+      cwd: ROOT, env: sanitizedEnv(), stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true,
     });
     let out = '', err = '';
     const timer = setTimeout(() => { log(`⏱ ${brain.name} exceeded ${Math.round(TURN_TIMEOUT_MS / 60000)}m — killing turn`); try { child.kill('SIGKILL'); } catch {} }, TURN_TIMEOUT_MS);
@@ -134,50 +165,57 @@ function runBrain(brain) {
       log(`■ ${brain.name} exited ${code}. ${tail}`);
       resolve({ ok: code === 0, code, tail });
     });
+    // Deliver the prompt on stdin for stdin-brains; otherwise just close stdin.
+    try { if (brain.stdin) child.stdin.write(prompt); child.stdin.end(); } catch (e) { log(`stdin write failed for ${brain.name}: ${e.message}`); }
   });
 }
 
 async function tick() {
-  const p = getProfile();
-  if (p.consent?.autoBrainLoop !== true) { log('consent OFF (consent.autoBrainLoop) — standing by'); return; }
   const brains = installedBrains();
-  if (!brains.length) { log('no coding-agent CLIs installed on PATH — nothing to dispatch (install codex/grok/claude/gemini to enable)'); return; }
+  if (!brains.length) { beat('no brains installed'); log('no coding-agent CLIs on PATH — standing by (install codex/grok/claude/gemini to drive)'); return; }
 
+  const leads = freshLeads();
   const bl = backlog();
-  if (bl.total === 0) { log('backlog empty (0 encounters, 0 questions) — nothing to reason about this tick'); return; }
+  if (bl.total === 0) { beat('idle (no leads, no encounters)'); log('nothing to do this tick (0 leads, 0 encounters, 0 questions)'); return; }
 
-  // ROTATION: pick the next brain round-robin across the INSTALLED ones.
+  // ROTATION: next installed brain, round-robin.
   const state = readState();
-  const brain = brains[state.turn % brains.length];
-  log(`backlog: ${bl.encounters} encounters, ${bl.questions} questions · installed brains: ${brains.map(b => b.name).join(', ')} · turn → ${brain.name}`);
-  const result = await runBrain(brain);
-  state.turn = (state.turn + 1) % Math.max(1, brains.length * 1000);
+  const brain = brains[(state.turn || 0) % brains.length];
+  log(`work: ${bl.leads} leads · ${bl.encounters} encounters · ${bl.questions} questions · brains: ${brains.map(b => b.name).join(',')} · turn → ${brain.name}`);
+  beat(`reasoning via ${brain.name} (${leads.length} leads + top encounter)`, { driver: brain.name });
+  const result = await runBrain(brain, buildPrompt(leads));
+  state.turn = ((state.turn || 0) + 1) % 1000;
   state.history = [{ ts: new Date().toISOString(), brain: brain.name, ...result, backlog: bl }, ...(state.history || [])].slice(0, 50);
   state.lastTick = new Date().toISOString();
   writeState(state);
+  beat('idle (between turns)', { driver: brain.name });
+  // Brief cooldown so a brain that fails instantly can't spin; real turns take minutes anyway.
+  await SLEEP(15000);
 }
 
 async function main() {
   await initDB();
   const brains = installedBrains();
-  log(`started. root=${ROOT}`);
-  log(`installed brains: ${brains.length ? brains.map(b => b.name).join(', ') : '(none — will stand by until one is installed)'}`);
-  log(`consent.autoBrainLoop currently: ${getProfile().consent?.autoBrainLoop === true ? 'ON' : 'OFF'}`);
-  log(`rotation + event-driven dispatch; heartbeat safety net every ${Math.round(HEARTBEAT_MS / 60000)}m; stops on data/.stop`);
+  log(`started (ALWAYS-ON brain driver). root=${ROOT}`);
+  log(`installed brains: ${brains.length ? brains.map(b => b.name).join(', ') : '(none — standing by until one is installed)'}`);
+  log(`brain control is NOT consent-gated; code-push still honors consent.autoContribute=${getProfile().consent?.autoContribute !== false}`);
+  log(`drives every apply/email/connect through reasoning + fixes tools; stops only on data/.stop`);
+  beat('started');
 
   let lastHeartbeat = 0;
   while (!stopped()) {
     const now = Date.now();
     const bl = backlog();
-    // Event-driven: dispatch as soon as there is a backlog. Heartbeat: also re-check on cadence.
-    if (getProfile().consent?.autoBrainLoop === true && (bl.total > 0 || now - lastHeartbeat >= HEARTBEAT_MS)) {
+    // Always-on: dispatch whenever there is ANY work (leads to act on OR encounters to fix). The
+    // idle heartbeat just guarantees a periodic re-check even if nothing changed. No consent gate.
+    if (bl.total > 0 || now - lastHeartbeat >= IDLE_HEARTBEAT_MS) {
       lastHeartbeat = now;
-      try { await tick(); } catch (e) { log('tick error (continuing): ' + ((e && e.message) || e)); }
+      try { await tick(); } catch (e) { log('tick error (continuing): ' + ((e && e.message) || e)); beat('tick error (continuing)'); }
     }
-    // Poll in short increments so Stop is honored promptly.
     for (let i = 0; i < Math.ceil(POLL_MS / 1000) && !stopped(); i++) await SLEEP(1000);
   }
-  log('⏹ data/.stop present — brain-loop exiting cleanly.');
+  log('⏹ data/.stop present — brain driver exiting cleanly.');
+  beat('stopped');
   process.exit(0);
 }
 

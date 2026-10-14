@@ -58,16 +58,23 @@ export function renderConsentBar(autoContribute) {
 }
 
 /**
- * Render the multi-brain self-evolution loop consent toggle bar.
- * When ON, installed coding-agent CLIs (codex, grok, claude, gemini, …) take turns reasoning
- * over open encounters and pushing code/doc fixes UNATTENDED. Strictly CLIs — never API keys.
- * @param {boolean} autoBrainLoop - current consent state
+ * Render the brain-driver STATUS bar. Brain control is ALWAYS-ON (not consent-gated) — this is a
+ * status indicator, not a toggle. It shows whether installed coding-agent CLIs are driving the
+ * pipeline, and what the brain is doing right now.
+ * @param {object} brain - brain-loop-state.json contents ({ phase, driver, ts })
+ * @param {string[]} installed - names of installed brains (codex/grok/claude/gemini)
  * @returns {string} HTML
  */
-export function renderBrainLoopBar(autoBrainLoop) {
-  return autoBrainLoop
-    ? `<div class="consentbar">🧠 <b>Multi-brain evolution loop: ON.</b> Your installed coding-agent CLIs (Codex · Grok · Claude · Gemini) take turns improving JobPilot's own tools and pushing <i>code/doc</i> fixes (hard-guarded — never your data). <button class="cbtn off" onclick="brainLoop(false)">Turn off</button></div>`
-    : `<div class="consentbar">🧠 <b>Multi-brain evolution loop: OFF.</b> Opt in to let your installed coding CLIs (Codex · Grok · Claude · Gemini — <i>CLIs only, never API keys</i>) autonomously reason over failures and improve the agent's own tools. <button class="cbtn on" onclick="brainLoop(true)">Enable multi-brain loop</button></div>`;
+export function renderBrainLoopBar(brain = {}, installed = []) {
+  const age = brain.ts ? (Date.now() - Date.parse(brain.ts)) / 1000 : 1e9;
+  const live = age < 180;                   // brain tick within last 3 min
+  const names = installed.length ? installed.join(' · ') : 'none installed';
+  if (live) {
+    return `<div class="consentbar">🧠 <b>Brain in control (always-on).</b> ${esc(brain.driver ? brain.driver + ' ' : '')}driving every apply/email/connect by reasoning — ${esc(brain.phase || 'working')}. Brains: ${esc(names)}. <span class="dim">Stops only when you Stop.</span></div>`;
+  }
+  return installed.length
+    ? `<div class="consentbar">🧠 <b>Brain driver idle/not started.</b> Installed brains: ${esc(names)}. Start it with <code>npm run brain-loop</code> — it then drives all outreach by reasoning. <span class="dim">(Not consent-gated; only code-push honors Self-contribution.)</span></div>`
+    : `<div class="consentbar">🧠 <b>No coding-agent CLI installed.</b> Install one of Codex · Grok · Claude · Gemini (CLIs only, never API keys) so the brain can drive the pipeline. The data-only worker still scrapes leads meanwhile.</div>`;
 }
 
 /**

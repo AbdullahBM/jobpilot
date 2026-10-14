@@ -113,11 +113,11 @@ const DEFAULT_PROFILE = {
   consent: {
     autoContribute: true,   // push code/doc improvements + file issues to the public repo automatically
     selfEvolveShare: true,  // share anonymized evolution insights upstream
-    // Multi-brain self-evolution loop: let INSTALLED coding-agent CLIs (codex, grok, claude,
-    // gemini, …) take turns reasoning over open encounters and pushing code/doc fixes UNATTENDED.
-    // Strictly CLIs — never API keys. OFF by default: it's a bigger step than autoContribute
-    // because external brains commit/PR on their own. Opt in from the dashboard or onboarding.
-    autoBrainLoop: false,
+    // NOTE: brain control is NOT consent-gated — the brain driving the pipeline is always-on core
+    // behavior (see scripts/brain-loop.mjs), like self-evolution. This field is retained only for
+    // backward-compat and is no longer read as a gate. The only real consent is autoContribute
+    // (whether code/doc fixes are pushed to GitHub); the brain can never push data/credentials.
+    autoBrainLoop: true,
   },
 
   _onboarded: false,
