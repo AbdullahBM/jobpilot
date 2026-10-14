@@ -35,13 +35,23 @@ const DAILY = { email: 50, easy: 80, form: 30, connect: 18 };
 // lead and let the CV/role guards decide than silently filter it out on a fuzzy score.
 const MIN_REL = { email: 0.15, easy_apply: 0.2, form: 0.25, connect: 0.3 };
 const MAX_AGE_DAYS = { email: 12, easy_apply: 4, form: 7, connect: 3 };
-// Per-lane pacing (ms, jittered). Cooldowns widened (per user request: "add cool down")
-// so we act more like a human and stay well under LinkedIn/Gmail throttle thresholds.
-// The applier (fastest, highest-risk lane) now waits 10-20s between actions instead of 4-9s.
-const PACE = { mailer: [18000, 30000], applier: [10000, 20000], connector: [45000, 90000], scout: [20000, 40000] };
-// Extra fixed cooldown applied after EVERY action in any lane, on top of the jittered PACE
-// above. Reads the user's profile knob (cooldownBetweenActionsMs) so it stays tunable.
+// Per-lane pacing (ms, jittered). Heavy anti-restriction pacing is reserved for the Easy-Apply
+// path only (see easyApplyCooldownRange). The mailer has its OWN brisk pace (emailPaceRange,
+// profile knob limits.emailPaceMs) because email carries no LinkedIn-restriction risk — only
+// Gmail throttling, which is generous. Scout only loads public pages, so it is polite-but-brisk
+// rather than anti-restriction paced. The applier/connector stay widened (account-write lanes).
+const PACE = { applier: [10000, 20000], connector: [45000, 90000], scout: [8000, 15000] };
+// Extra fixed cooldown applied after EVERY action in the account-write lanes (applier/connector),
+// on top of the jittered PACE above. Reads the user's profile knob (cooldownBetweenActionsMs) so
+// it stays tunable. The mailer does NOT use this — email is paced only by emailPaceRange().
 const extraCooldown = () => SLEEP(Math.max(0, +(getProfile().limits?.cooldownBetweenActionsMs) || 4000));
+// Email (mailer) pace [min,max] ms, profile-configurable (limits.emailPaceMs). Falls back to a
+// brisk default. This is intentionally NOT the Easy-Apply anti-restriction cooldown.
+function emailPaceRange() {
+  const v = getProfile().limits?.emailPaceMs;
+  if (Array.isArray(v) && v.length === 2 && v.every(n => Number.isFinite(n) && n >= 0) && v[1] >= v[0]) return v;
+  return [4000, 9000];
+}
 const RUN_MS = +(process.env.RUN_MS || 0) || Infinity; // 0/absent = run forever
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
@@ -287,7 +297,7 @@ async function mailer() {
     const subj = mkSubject(job, p), body = mkBody(job, p);
     beat('mailer', `emailing ${j.email}`);
     // Dry runs must be observational: do not consume attempts or mark a lead as sent.
-    if (DRY) { say('mailer', `DRY → ${j.email}`); await jitter(PACE.mailer); continue; }
+    if (DRY) { say('mailer', `DRY → ${j.email}`); await jitter(emailPaceRange()); continue; }
     bumpAttempt(j.url);
     const r = await sendViaGmail({ to: j.email, subject: subj, body, attachmentPath: jobCvAttachment(j, p) });
     if (r.ok) { logEmail(j.email, j.company, j.role, subj, 'sent', j.url); setStatus(j.url, 'emailed', `sent: ${subj}`); clearLogin('Gmail'); }
@@ -297,7 +307,7 @@ async function mailer() {
     outcome('email_domain', (j.email.split('@')[1] || ''), { win: r.ok });
     say('mailer', `${r.ok ? '✉ SENT' : '✗'} ${j.email} (${j.role} @ ${j.company})`);
     writeDash();
-    await jitter(PACE.mailer); await extraCooldown();
+    await jitter(emailPaceRange());
    } catch (e) { say('mailer', 'error (skipping lead): ' + ((e && e.message) || e || '').toString().slice(0, 80)); await SLEEP(5000); }
   }
 }

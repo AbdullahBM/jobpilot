@@ -90,6 +90,10 @@ const DEFAULT_PROFILE = {
     maxAttemptsPerJob: 3,
     requestTimeoutMs: 30000,
     cooldownBetweenActionsMs: 4000,
+    // Email (mailer) pacing [min,max] ms between sends. Email carries NO LinkedIn-restriction
+    // risk — only Gmail throttling, which is generous — so it is deliberately brisk and is NOT
+    // the heavy Easy-Apply cooldown. Tune here if Gmail ever complains.
+    emailPaceMs: [4000, 9000],
     // Easy Apply account-safety: stop at this fraction of the (daily-refreshed) LinkedIn limit,
     // and wait a randomized [min,max] ms AFTER each successful Easy Apply so submissions never
     // burst. See src/limits.js for the researched daily limit.
