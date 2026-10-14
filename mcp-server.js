@@ -534,16 +534,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 async function main() {
   await initDB();
   await initAttempts();
-  // Auto-launch the debug Chrome at boot so the agent never has to be told to.
-  try { await launchChrome(); } catch (e) { console.error('[job-agent] Chrome auto-launch:', e.message); }
+  // Connect the MCP transport FIRST so the client handshake (initialize / tools/list) succeeds
+  // immediately — Chrome launch and other boot work must never delay tool availability, or strict
+  // MCP clients (e.g. codex) time out the server startup and see NO tools.
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  // Auto-launch the debug Chrome in the BACKGROUND (not awaited) so logged-in sites become
+  // reachable without blocking the handshake. Any browser tool self-heals Chrome if it's not up.
+  Promise.resolve().then(() => launchChrome()).catch(e => console.error('[job-agent] Chrome auto-launch:', e.message));
   // Only auto-start the dashboard server at boot when explicitly requested (START_UI=1); otherwise
   // it starts lazily via ensureUI() when a UI tool is used. Prevents binding a port on every MCP load.
   if (process.env.START_UI === '1') {
     try { PORT = await startServer(); } catch (e) { console.error('[job-agent] web server failed:', e.message); }
   }
   if (PORT) process.env.JOB_AGENT_PORT = String(PORT);   // so writeDash() embeds the correct fallback port
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
   // Agent-only mode: keep self-evolution + recontribution running on a timer too (stands down
   // automatically while the always-on worker is live, so there's never double-contribution).
   try { const { startBackgroundEvolve } = await import('./src/evolve-loop.js'); startBackgroundEvolve(); } catch (e) { console.error('[job-agent] background evolve not started:', e.message); }
