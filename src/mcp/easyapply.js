@@ -6,7 +6,7 @@
 //   • success is VERIFIED by reloading the job and reading "Application submitted"
 import { getContext } from '../agent/browser.js';
 import { getProfile } from '../profile.js';
-import { textAnswer, choiceAnswer } from './answers.js';
+import { textAnswer, choiceAnswer, salaryFor } from './answers.js';
 import { learn, askLater, encounter } from '../evolve.js';
 import fs from 'fs';
 import { cvAttachmentForJob } from '../cv.js';
@@ -116,8 +116,17 @@ async function fillPage(page, dlg, ctx, job = {}) {
         continue;
       }
       if (f.val && f.val.trim()) { if (!IDENTITY.test(f.q) && f.q.length > 8) learn(f.q, f.val.trim(), 'harvested'); continue; }
-      const numeric = f.numeric || /how many|years|number of|salary|compensation|ctc|rate|expectation/i.test(f.q);
-      const v = textAnswer(f.q, { numeric });
+      // Salary/compensation fields: LinkedIn renders them type=text but silently rejects
+      // non-numeric input (e.g. "Negotiable"), which blocks "Review" with no visible error.
+      // Force a numeric answer for anything salary-shaped so the page can advance.
+      const isSalary = /salary|compensation|\bctc\b|expected pay|pay expectation|remuneration|\brate\b/i.test(f.q);
+      const numeric = f.numeric || isSalary || /how many|years|number of/i.test(f.q);
+      let v = textAnswer(f.q, { numeric });
+      // If a salary field still came back non-numeric, coerce to the expected figure's digits.
+      if (isSalary && (v == null || isNaN(parseFloat(String(v).replace(/[,\s]/g, ''))))) {
+        const sal = salaryFor(f.q, getProfile(), true);
+        v = sal != null ? String(sal).replace(/[^\d]/g, '') : v;
+      }
       if (v == null || v === '') { if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q); } continue; }
       await loc.fill(String(v));
       ctx.used.push(f.q);
@@ -135,24 +144,45 @@ async function fillPage(page, dlg, ctx, job = {}) {
     const learnable = g[0].q.length > 8 && !/^radio-group/.test(g[0].q);
     const checked = g.find(r => r.checked);
     if (checked) { if (learnable && checked.optLabel) learn(g[0].q, checked.optLabel, 'harvested'); continue; }
-    const pick = choiceAnswer(g[0].q, g.map(r => r.optLabel));
-    if (process.env.DEBUG_EA) console.log('RADIO', JSON.stringify({ q: g[0].q, opts: g.map(r => r.optLabel), pick }));
+    // 2026 LinkedIn renders yes/no screening radios as raw <input type=radio> with EMPTY
+    // labels and NO role=radio wrapper — both inputs share the QUESTION as aria-label and the
+    // visible "Yes"/"No" text is absent from the DOM. The option can then only be inferred by
+    // ORDER (LinkedIn convention: first = Yes, second = No). Build effective labels accordingly.
+    const rawLabels = g.map(r => (r.optLabel || '').trim());
+    const allEmpty = rawLabels.every(l => !l);
+    const effLabels = allEmpty && g.length === 2 ? ['Yes', 'No'] : rawLabels;
+
+    const pick = choiceAnswer(g[0].q, effLabels);
+    if (process.env.DEBUG_EA) console.log('RADIO', JSON.stringify({ q: g[0].q, raw: rawLabels, eff: effLabels, pick }));
     if (!pick) {
       if (isOptionalConsent(g[0].q)) continue; // optional consent radio → don't block
-      ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, g.map(r => r.optLabel)); continue;
+      ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); continue;
     }
-    // The role=radio WRAPPER carries aria-label=question and the visible option text.
-    // Clicking the wrapper is what registers (hidden <input> ignores synthetic clicks).
-    const wrap = dlg.getByRole('radio', { name: g[0].q, exact: false }).filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
+    // Map the picked label to the specific input in the group.
+    const pickIdx = effLabels.findIndex(l => l.toLowerCase() === pick.toLowerCase());
+    const targetField = pickIdx >= 0 ? g[pickIdx] : g.find(x => (x.optLabel || '').toLowerCase() === pick.toLowerCase()) || g[0];
+    const loc = page.locator(`[data-ja="${targetField.id}"]`);
     let okRadio = false;
-    if (await wrap.count().catch(() => 0)) { await wrap.click({ timeout: 3000 }).catch(() => {}); okRadio = await wrap.getAttribute('aria-checked').then(v => v === 'true').catch(() => false); }
-    if (!okRadio) { // fallback: data-ja input's role=radio ancestor
-      const loc = page.locator(`[data-ja="${g.find(x => x.optLabel === pick)?.id || g[0].id}"]`);
-      await loc.locator('xpath=ancestor::*[@role="radio"][1]').click({ timeout: 2500 }).catch(() => {});
-      okRadio = await loc.isChecked().catch(() => false);
+    // The <input> is 0×0 (unclickable) and its React id is ephemeral; resolve the real
+    // clickable <label for=id> from the STABLE data-ja input inside one evaluate, click it,
+    // force the input checked, and fire change/input so LinkedIn's form state advances.
+    okRadio = await loc.evaluate(el => {
+      const root = el.getRootNode();
+      const lbl = el.id ? root.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+      if (lbl) { try { lbl.click(); } catch {} }
+      if (!el.checked) { el.checked = true; try { el.click(); } catch {} }
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return !!el.checked;
+    }).catch(() => false);
+    // Fallback: role=radio wrapper (older UI).
+    if (!okRadio) {
+      const wrap = dlg.getByRole('radio', { name: g[0].q, exact: false }).filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
+      if (await wrap.count().catch(() => 0)) { await wrap.click({ timeout: 2500 }).catch(() => {}); okRadio = await wrap.getAttribute('aria-checked').then(v => v === 'true').catch(() => false); }
     }
-    if (process.env.DEBUG_EA) console.log('  radio checked:', okRadio);
-    ctx.used.push(g[0].q);
+    if (process.env.DEBUG_EA) console.log('  radio checked:', okRadio, 'pickIdx', pickIdx);
+    if (okRadio) ctx.used.push(g[0].q);
+    else if (!isOptionalConsent(g[0].q)) { ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, effLabels); }
   }
 
   // Checkbox GROUPS (multi-option "select all that apply" / single-select questions).

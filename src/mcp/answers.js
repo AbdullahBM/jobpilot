@@ -74,7 +74,23 @@ export function salaryFor(q, p, numeric = false) {
   const s = salaryExpectation(p, q);
   if (!s) {
     const fallback = CURRENT_SALARY_RE.test(q) ? ans(p, 'current salary', null) : ans(p, 'salary', null);
-    return fallback || (numeric ? null : 'Negotiable');
+    if (fallback) return fallback;
+    // For a REQUIRED numeric current-salary field with no current salary on file, fall back to
+    // the expected/desired figure (a sensible number) rather than null — null leaves the field
+    // blank and blocks the whole Easy Apply. Non-numeric fields can say "Negotiable".
+    if (numeric) {
+      const exp = salaryExpectation(p, 'expected salary');
+      if (exp) {
+        const baseCur = String(exp.currency || 'usd').toLowerCase();
+        const period = requestedPeriod(q, exp.period || 'month');
+        const toMonthly = v => (exp.period === 'year') ? v / 12 : (exp.period === 'hour') ? v * 160 : v;
+        const fromMonthly = v => period === 'year' ? v * 12 : period === 'hour' ? v / 160 : v;
+        const base = +exp.min || +exp.amount || +exp.max || 0;
+        if (base) return String(formatSalaryValue(fromMonthly(toMonthly(base)), baseCur, period));
+      }
+      return null;
+    }
+    return 'Negotiable';
   }
   const baseCur = String(s.currency || 'usd').toLowerCase();
   const cur = requestedCurrency(q, baseCur);
@@ -105,11 +121,27 @@ export function textAnswer(question, { numeric = false } = {}) {
   const L = p.links || {};
   const [first, ...rest] = (p.name || '').split(' ');
 
-  // 1. Evolution memory (user-taught or harvested) — highest trust
+  // 0. GENERIC "how many years of experience" questions: always answer from the profile's
+  //    yearsExperience, BEFORE any fuzzy learned-answer lookup. Fuzzy matching across the
+  //    many harvested "how many years of X" entries (some 0/1/2 for techs the user hasn't
+  //    used) was leaking a wrong low number into unrelated role-experience questions.
+  //    Only skip this shortcut when the question names a SPECIFIC technology that the user
+  //    has an explicit per-tech answer for (those are handled by the normal learned lookup).
+  const yrsProfile = p.yearsExperience ? String(p.yearsExperience) : '';
+  const isGenericYears = /\bhow many years?\b|\byears? of (hands-on |professional |work |commercial |relevant |overall |total )*(experience|exp)\b/i.test(q)
+    && !/\b(with|in)\s+[a-z]/i.test(q.replace(/years? of (hands-on|professional|work|commercial|relevant|overall|total)/gi, ''));
+  if (yrsProfile && isGenericYears) {
+    recordAgentAnswer(question, yrsProfile, 'yearsExperience from profile (generic years question)');
+    return yrsProfile;
+  }
+
+  // 1. Evolution memory (user-taught or harvested) — highest trust.
+  //    Guard: never accept a numeric '0' from a HARVESTED answer for a years question — that is
+  //    almost always a different tech harvested as 0 that fuzzy-matched. User-set 0 is kept.
   const learned = learnedAnswer(question);
   if (learned != null && !(numeric && isNaN(parseFloat(learned)))) {
-    usedAnswer(question);
-    return learned;
+    const badHarvestedZero = numeric && /year/i.test(q) && parseFloat(learned) === 0;
+    if (!badHarvestedZero) { usedAnswer(question); return learned; }
   }
 
   // 2. profile.answers key overrides (multi-word fuzzy match)
