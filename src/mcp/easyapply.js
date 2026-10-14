@@ -266,8 +266,23 @@ async function fillPage(page, dlg, ctx, job = {}) {
         const agentSel = agentAnswerFor(ctx, f.q);
         if (agentSel !== undefined) { const a = String(Array.isArray(agentSel) ? agentSel[0] : agentSel).toLowerCase(); pick = selOpts.find(o => o.toLowerCase() === a) || selOpts.find(o => o.toLowerCase().includes(a) || a.includes(o.toLowerCase())) || null; }
         if (!pick) pick = choiceAnswer(f.q, selOpts);
-        if (pick) await loc.selectOption({ label: pick }).catch(() => {});
-        else if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q, selOpts); }
+        // "How did you hear about this opportunity" (often an EMPTY-label select) → prefer a
+        // sensible option by its text when the question couldn't be matched.
+        if (!pick) {
+          const opts = selOpts.map(o => o.toLowerCase());
+          const byText = (re) => selOpts[opts.findIndex(o => re.test(o))];
+          if (opts.some(o => /job posting|linkedin|job board|online|search engine|other/.test(o)))
+            pick = byText(/linkedin/) || byText(/job posting/) || byText(/job board|online/) || byText(/search engine/) || byText(/^other$/);
+        }
+        // Last resort for ANY required select: never leave it empty — pick a neutral/first option.
+        if (!pick && f.required && !isOptionalConsent(f.q)) {
+          pick = selOpts.find(o => /^(other|prefer not|n\/?a)/i.test(o)) || selOpts[0];
+        }
+        if (pick) {
+          await loc.selectOption({ label: pick }).catch(async () => { await loc.selectOption(pick).catch(() => {}); });
+          await loc.evaluate(s => { s.dispatchEvent(new Event('change', { bubbles: true })); s.dispatchEvent(new Event('input', { bubbles: true })); }).catch(() => {});
+          ctx.used.push(f.q || 'select');
+        } else if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q, selOpts); }
         continue;
       }
       if (f.val && f.val.trim()) { if (!IDENTITY.test(f.q) && f.q.length > 8) learn(f.q, f.val.trim(), 'harvested'); continue; }
@@ -407,7 +422,14 @@ async function fillPage(page, dlg, ctx, job = {}) {
       if ((v == null || v === '') && /which country.*(reside|live|based)|country of residence/i.test(f.q)) v = p.country || 'Pakistan';
       if (isSalary && (v == null || isNaN(parseFloat(String(v).replace(/[,\s]/g, ''))))) { const s = salaryFor(/\busd\b|\$/i.test(f.q) ? f.q + ' usd' : f.q, p, true); if (s != null) v = String(s).replace(/[^\d]/g, ''); }
       if (v == null || v === '') continue;
-      if (f.tag === 'SELECT') { const opts = (f.opts || []).slice(1); const a = String(v).toLowerCase(); const pick = opts.find(o => o.toLowerCase() === a) || opts.find(o => o.toLowerCase().includes(a) || a.includes(o.toLowerCase())); if (pick) await loc.selectOption({ label: pick }).catch(() => {}); continue; }
+      if (f.tag === 'SELECT') {
+        const opts = (f.opts || []).slice(1); const a = String(v).toLowerCase();
+        let pick = opts.find(o => o.toLowerCase() === a) || opts.find(o => o.toLowerCase().includes(a) || a.includes(o.toLowerCase()));
+        if (!pick) { const lo = opts.map(o => o.toLowerCase()); if (lo.some(o => /job posting|linkedin|search engine|other/.test(o))) pick = opts[lo.findIndex(o => /linkedin/.test(o))] || opts[lo.findIndex(o => /job posting/.test(o))] || opts[lo.findIndex(o => /^other$/.test(o))]; }
+        if (!pick) pick = opts.find(o => /^(other|prefer not|n\/?a)/i.test(o)) || opts[0];
+        if (pick) { await loc.selectOption({ label: pick }).catch(async () => { await loc.selectOption(pick).catch(() => {}); }); await loc.evaluate(s => { s.dispatchEvent(new Event('change', { bubbles: true })); s.dispatchEvent(new Event('input', { bubbles: true })); }).catch(() => {}); }
+        continue;
+      }
       let fillVal = String(v); if (f.maxlength && fillVal.length > f.maxlength) fillVal = f.maxlength <= 10 ? (/\byes\b/i.test(fillVal) ? 'Yes' : fillVal.slice(0, f.maxlength)) : fillVal.slice(0, f.maxlength);
       await loc.fill(fillVal).catch(() => {});
     }
