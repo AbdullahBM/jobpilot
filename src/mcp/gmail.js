@@ -32,33 +32,34 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
       }
     }
 
-    // Click the Compose button to open the compose window
-    const composeBtn = page.getByRole('button', { name: /compose/i }).first()
-      .or(page.locator('[data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE').first());
-    await composeBtn.click({ timeout: 10000 }).catch(() => {});
-    await SLEEP(2500);
+    // Wait for the Gmail UI itself to be interactive before trying to compose — on a cold tab the
+    // Compose button isn't mounted for a few seconds, which is the #1 cause of the compose-open
+    // timeouts we used to burn attempts on.
+    await page.locator('[gh="cm"], [data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE')
+      .first().waitFor({ state: 'visible', timeout: 25000 }).catch(() => {});
 
     // The compose window — Gmail renders it as a table/div, NOT role="dialog" in all versions.
-    // Use a broad selector that works across Gmail UI variants.
-    const dlg = page.locator([
-      'div[role="dialog"]',
-      '.nH.Hd[tabindex="-1"]',          // classic Gmail compose wrapper
-      'div.AD',                           // newer Gmail compose panel
-      'div[aria-label*="New Message"]',
-      'div[aria-label*="New message"]',
-      'table.aoC',
-    ].join(', ')).filter({ has: page.locator('input[name="subjectbox"], input[aria-label*="Subject" i]') }).last();
-
-    // Wait generously — compose window can take a few seconds to fully mount.
-    await dlg.waitFor({ state: 'visible', timeout: 20000 }).catch(async () => {
-      // Fallback: just look for the subject input anywhere on the page
-    });
-
-    // Use the subject input as anchor — works whether or not the dialog wrapper matched.
+    // Use a broad selector that works across Gmail UI variants, anchored on the subject input.
     const subjectInput = page.locator('input[name="subjectbox"]')
       .or(page.locator('input[aria-label*="Subject" i]')).first();
-    const subjectVisible = await subjectInput.isVisible().catch(() => false);
-    if (!subjectVisible) return { ok: false, result: 'failed', detail: 'Gmail compose window did not open' };
+
+    // Opening Compose is flaky (button not yet mounted, UI re-render, stray overlay). Retry a few
+    // times before giving up, and only after exhausting retries do we classify it as a TRANSIENT
+    // failure (retry later, attempt NOT burned) instead of a hard "did not open" that burned a try.
+    let composeOpened = false;
+    for (let attempt = 0; attempt < 3 && !composeOpened; attempt++) {
+      const composeBtn = page.getByRole('button', { name: /compose/i }).first()
+        .or(page.locator('[gh="cm"], [data-tooltip="Compose"], [aria-label="Compose"], .T-I-KE').first());
+      await composeBtn.click({ timeout: 10000 }).catch(() => {});
+      // Keyboard fallback: Gmail opens compose on "c" when the inbox has focus.
+      await page.keyboard.press('c').catch(() => {});
+      composeOpened = await subjectInput.waitFor({ state: 'visible', timeout: 12000 })
+        .then(() => true).catch(() => false);
+      if (!composeOpened) await SLEEP(2000);
+    }
+    if (!composeOpened) {
+      return { ok: false, result: 'failed', detail: 'Gmail compose window did not open', transient: true };
+    }
 
     // To field
     const toField = page.locator('input[aria-label*="To" i], input[peoplekit-id], textarea[name="to"]').first();
@@ -112,11 +113,14 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
     // is unavailable. Classify as transient so the mailer retries later WITHOUT burning an attempt
     // and WITHOUT raising a false "Gmail not logged in" banner.
     if (!page) return { ok: false, result: 'failed', detail: 'cdp_unavailable', transient: true };
+    // Browser/tab teardown mid-send (another process closing the tab, CDP churn, aborted nav) is
+    // NOT a real send failure — the compose never completed, so retry later without burning an
+    // attempt. Only a genuine error after the compose UI was driven is a hard failure.
+    const msg = (e.message || '');
+    if (/target (page|closed)|context or browser has been closed|frame was detached|err_aborted|err_network_io_suspended|session closed|websocket/i.test(msg)) {
+      return { ok: false, result: 'failed', detail: ('transient browser teardown: ' + msg).slice(0, 200), transient: true };
+    }
     // A failure after the page opened is a real send error — NOT transient.
-    return { ok: false, result: 'failed', detail: (e.message || '').slice(0, 200) };
+    return { ok: false, result: 'failed', detail: msg.slice(0, 200) };
   } finally { if (page) await page.close().catch(() => {}); }
-}
-
-async function discardDraft(page, dlg) {
-  await dlg.getByRole('button', { name: /discard draft/i }).first().click().catch(() => {});
 }
