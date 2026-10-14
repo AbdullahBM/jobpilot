@@ -92,7 +92,7 @@ const notLoggedIn = d => /not logged in|log into|authwall|sign in|please log in/
 // The user's action policy is to leave roles that require citizenship, a visa,
 // a work permit, or other location-specific work authorization. Treat these as
 // hard skips instead of parking them for manual answers.
-const WORK_AUTH_REQUIRED = /citizenship|work authorization|authorized to work|right to work|work permit|visa sponsorship|sponsorship required|employment visa|security clearance/i;
+const WORK_AUTH_REQUIRED = /citizenship|work authorization|authorized to work|right to work|work permit|visa sponsorship|sponsorship required|employment visa|security clearance|(?:us|u\.s\.|united states)\s+(?:citizens?|nationals?|permanent residents?|green card holders?|ead holders?)|green card holders?|ead holders?|unable to sponsor|cannot sponsor|can't sponsor|no sponsorship|sponsorship (?:is )?(?:not|isn't) (?:available|provided|offered)|\bw-?2\b/i;
 const requiresWorkAuthorization = r => WORK_AUTH_REQUIRED.test([
   r?.detail || '', ...(r?.questions || []), r?.meta?.head || '',
 ].join(' '));
