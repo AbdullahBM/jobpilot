@@ -475,26 +475,29 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true, job = 
     // click fallbacks instead of a single click() that hangs until the actionability timeout.
     // For jobicy.com, use a wider selector set with a longer timeout.
     const isJobicy = /jobicy\.com/.test(hostOf(page.url()));
+    // Lever's real control is `<button id="btn-submit" type="button" class="template-btn-submit">`.
+    // The page also has a hidden `<button id="hcaptchaSubmitBtn" type="submit" class="hidden">`.
+    // Matching `button[type=submit]` first clicks that decoy (or treats it as "no submit button"
+    // because it is hidden and disabled) and never reaches Submit application.
     const btn = isJobicy
       ? page.locator(
           'button[type="submit"], input[type="submit"], .apply-btn, #apply-button, a.apply-button'
         ).first()
           .or(page.locator('button').filter({ hasText: /submit|apply/i }).first())
         : page.locator(
-          'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"]), input[type="submit"]'
+          '#btn-submit, button.template-btn-submit, button[data-qa="btn-submit"], button[data-ui="apply-button"], [data-ui="submit"]'
         ).first()
+          .or(page.locator('button[type="submit"]:not(#hcaptchaSubmitBtn):not(.hidden), input[type="submit"]').first())
           .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|complete application|^apply$/i }).last())
-          .or(page.locator('a[role="button"]').filter({ hasText: /submit|apply now/i }).first());
+          .or(page.locator('a[role="button"], a.postings-btn').filter({ hasText: /submit application|apply now/i }).first());
     const btnTimeout = isJobicy ? 8000 : 5000;
-    // Try to find the button even if it's currently not visible (off-screen / in sticky footer).
-    let btnExists = (await btn.count().catch(() => 0)) > 0;
-    if (!btnExists) {
-      // Last resort: any button at the bottom of the page whose text looks like submit.
-      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
-      await SLEEP(800);
-      btnExists = (await btn.count().catch(() => 0)) > 0;
-    }
-    if (!btnExists || !(await btn.isVisible().catch(() => false)) && !(await btn.isEnabled().catch(() => false))) {
+    // The submit control sits at the bottom of a long form. Scroll before the visibility check
+    // so a below-the-fold button is not reported as missing.
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+    await SLEEP(400);
+    const btnExists = (await btn.count().catch(() => 0)) > 0;
+    const btnVisible = btnExists && await btn.isVisible().catch(() => false);
+    if (!btnExists || !btnVisible) {
       await encounter('form', 'form filled but no submit button on ' + hostOf(finalUrl), { url: finalUrl, page });
       return { ok: false, result: 'needs_manual', detail: 'no submit button', finalUrl };
     }
