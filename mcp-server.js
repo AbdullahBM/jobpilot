@@ -4,8 +4,6 @@
 // The CLIENT's LLM is the brain; this server is the hands + memory.
 //
 // Run:  node mcp-server.js   (stdio transport)
-import fs from 'fs';
-import path from 'path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -495,20 +493,17 @@ async function main() {
   // Log to stderr (stdout is the MCP channel)
   console.error(`[job-agent-mcp] ready — ${TOOLS.length} tools over stdio · UI at http://127.0.0.1:${PORT}`);
 
-  // ── Shutdown hook: when the agent disconnects / process exits, write the stop flag
-  // so the auto-started background worker (worker-forever.mjs) detects it and stops.
-  // This ensures no orphaned worker processes outlive the agent session.
-  const { DATA: DATA_DIR } = await import('./src/config.js');
-  const STOPFILE_PATH = path.join(DATA_DIR, '.stop');
-  function writeStop() {
-    try { fs.writeFileSync(STOPFILE_PATH, new Date().toISOString()); } catch {}
-    console.error('[job-agent-mcp] stop flag written — background worker will exit');
-  }
-  process.on('exit', writeStop);
-  process.on('SIGINT',  () => { writeStop(); process.exit(0); });
-  process.on('SIGTERM', () => { writeStop(); process.exit(0); });
-  // stdin closing = agent disconnected (stdio MCP transport)
-  process.stdin.on('end', () => { writeStop(); setTimeout(() => process.exit(0), 1500); });
+  // ── Shutdown behavior: the always-on worker (worker-forever.mjs → src/worker.js) is a
+  // DETACHED, self-respawning process that is designed to OUTLIVE the agent session. The MCP
+  // server disconnecting or exiting is NOT a user Stop, so it must never write data/.stop —
+  // doing so killed the loop on every reconnect/hiccup (see issue #109). Only an explicit user
+  // Stop writes the sentinel: dashboard POST /api/stop (src/server.js) or `npm run stop`
+  // (scripts/stop.mjs). On agent disconnect we simply exit this process and leave the worker
+  // running so hunting/applying/evolving continues until the user presses Stop.
+  process.on('SIGINT',  () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
+  // stdin closing = agent disconnected (stdio MCP transport) — exit cleanly, don't stop the worker.
+  process.stdin.on('end', () => { setTimeout(() => process.exit(0), 1500); });
 }
 
 main().catch(e => { console.error('FATAL:', e); process.exit(1); });
