@@ -59,16 +59,22 @@ That is the entire per-brain step. Once wired, the brain reads this file and is 
 ### Your job when you are the brain driving a cycle
 
 1. **Connect** to the JobPilot MCP (your CLI config above gives you the tools).
-2. **Act on the freshest leads** already in the bank. For each, judge relevance against the profile
+2. **Find jobs across the WHOLE internet — not just LinkedIn.** LinkedIn posts/jobs are one source;
+   also use `web_research` / `scrape_public_source` / `scrape_fresh` (hn/reddit/boards) to search the
+   open web, company careers pages, and regional job boards. Honor the user's location preferences
+   (`profile.preferences.locations`) and relocation stance (`workAuth.willingToRelocate`): when set,
+   actively hunt **Middle East and EU** roles and **relocation / visa-sponsorship** openings — these
+   are desirable, never skip them as "geo-locked". Save discovered leads with `save_jobs`.
+3. **Act on the freshest leads** in the bank. For each, judge relevance against the profile
    (roles, skip list, salary, work-auth), then — after `check_already_actioned` — act via the right
    channel: email → `send_email` (CV auto-attaches); Easy Apply / LinkedIn job → `apply_linkedin_easy`;
    external form / ATS or job-board URL → `apply_portal`; only a poster, no email/form →
    `linkedin_connect` with a short personalized note. Record skips with `set_job_status` + a reason.
    Email is uncapped (your Gmail, no restriction risk) — pace sensibly. Never burst Easy Apply.
-3. **Advance self-evolution once:** read `evolution_report`, take the top open encounter, open its
+4. **Advance self-evolution once:** read `evolution_report`, take the top open encounter, open its
    screenshot+HTML under `data/evolution/`, fix the root cause in the relevant module (you may
    modify or create tools), verify it parses, `resolve_encounter`, then `contribute_improvements`.
-4. **Never** touch `data/`, `.env*`, `uploads/`, or credentials. **Never** re-email/re-apply/
+5. **Never** touch `data/`, `.env*`, `uploads/`, or credentials. **Never** re-email/re-apply/
    re-connect (dedup via `check_already_actioned` + `data/jobs.db`).
 
 ## 🔁 Keep yourself in the loop — never stop until the user stops you
