@@ -89,6 +89,13 @@ function flagLogin(site, reason, url) {
 }
 function clearLogin(site) { if (state.loginNeeded && state.loginNeeded[site]) { delete state.loginNeeded[site]; delete loginProbeAt[site]; try { fs.writeFileSync(STATE, JSON.stringify(state)); } catch {} } }
 const notLoggedIn = d => /not logged in|log into|authwall|sign in|please log in/i.test(d || '');
+// The user's action policy is to leave roles that require citizenship, a visa,
+// a work permit, or other location-specific work authorization. Treat these as
+// hard skips instead of parking them for manual answers.
+const WORK_AUTH_REQUIRED = /citizenship|work authorization|authorized to work|right to work|work permit|visa sponsorship|sponsorship required|employment visa|security clearance/i;
+const requiresWorkAuthorization = r => WORK_AUTH_REQUIRED.test([
+  r?.detail || '', ...(r?.questions || []), r?.meta?.head || '',
+].join(' '));
 // Login backoff: once a site needs login, stop hammering it — surface the banner and only
 // re-probe every few minutes. Returns true if we should SKIP acting on this site right now.
 const loginProbeAt = {};
@@ -270,7 +277,10 @@ async function applier() {
         }
         if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); easyFailStreak = 0; clearLogin('LinkedIn'); }
         else if (r.result === 'no_easy_apply') { if (r.externalUrl) setFields(j.url, { channel: 'form', apply_url: r.externalUrl }); else setStatus(j.url, 'skipped', 'no Easy Apply / external'); }
-        else if (r.result === 'needs_answers') setStatus(j.url, 'needs_manual', r.detail);
+        else if (r.result === 'needs_answers') {
+          if (requiresWorkAuthorization(r)) setStatus(j.url, 'skipped', 'skipped: work authorization/citizenship requirement');
+          else setStatus(j.url, 'needs_manual', r.detail);
+        }
         else if (r.result === 'closed') setStatus(j.url, 'skipped', 'closed');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
         // repeated misses in a row usually mean soft-throttling → 30-min cooldown (per your guidance)
@@ -282,7 +292,10 @@ async function applier() {
         beat('applier', `📋 ${j.role} @ ${j.company}`);
         const r = await applyForm({ url: target, submit: true, job: { ...j, role: j.role, company: j.company, description: j.description } });
         if (r.result === 'submitted') setStatus(j.url, 'applied', 'form submitted');
-        else if (r.result === 'needs_manual') setStatus(j.url, 'needs_manual', r.detail);
+        else if (r.result === 'needs_manual') {
+          if (requiresWorkAuthorization(r)) setStatus(j.url, 'skipped', 'skipped: work authorization/citizenship requirement');
+          else setStatus(j.url, 'needs_manual', r.detail);
+        }
         else if (r.result === 'no_form') setStatus(j.url, 'skipped', 'no form');
         else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
         if (r.finalUrl) setFields(j.url, { apply_url: r.finalUrl });
