@@ -9,19 +9,27 @@ const APPLY_SIGNALS = ['email your cv', 'dm me', 'apply', 'remote'];
 
 /**
  * Build a deduped list of search queries from the profile's roles + keywords.
- * Each role gets a few phrasings; remote preference is appended when set.
+ * Each role gets a few phrasings; country-scoped profiles also inject location terms
+ * so LinkedIn content search surfaces local hiring posts.
  */
-export function buildQueries({ limit = 26 } = {}) {
+export function buildQueries({ limit = 30 } = {}) {
   const p = getProfile();
   const roles = (p.preferences?.roles || []).length
     ? p.preferences.roles
     : ['DevOps Engineer', 'Site Reliability Engineer', 'Cloud Engineer', 'Platform Engineer', 'Cloud Infrastructure Engineer', 'Cloud Solution Architect'];
   const remote = p.preferences?.remoteOnly ? ' remote' : '';
 
+  // Country-scoped: append location terms so LinkedIn content search surfaces local hiring posts.
+  const isCountryScope = p.preferences?.locationScope === 'country';
+  const isPakistan = isCountryScope && String(p.country || '').toLowerCase() === 'pakistan';
+  const locationVariants = isPakistan ? [' Pakistan', ' Karachi', ' Lahore', ''] : [''];
+
   const out = new Set();
   for (const role of roles) {
-    out.add(`hiring ${role}${remote}`);
-    out.add(`we are hiring ${role}${remote}`);
+    for (const loc of locationVariants) {   // all location variants per role
+      out.add(`hiring ${role}${loc}${remote}`);
+      out.add(`we are hiring ${role}${loc}${remote}`);
+    }
     out.add(`looking for ${role}${remote} email your cv`);
   }
   return [...out].slice(0, limit);
