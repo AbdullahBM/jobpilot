@@ -86,10 +86,25 @@ const DEFAULT_PROFILE = {
   // Safety caps
   limits: {
     maxEmailsPerRun: 25,
+    // Email daily cap: 0 = UNLIMITED (default). Set a positive number to put a ceiling on how many
+    // application emails the agent sends per rolling 24h. Email via the user's Gmail carries no
+    // LinkedIn-restriction risk, so it is intentionally uncapped unless the user chooses otherwise.
+    maxEmailsPerDay: 0,
     maxAppliesPerRun: 15,
     maxAttemptsPerJob: 3,
     requestTimeoutMs: 30000,
     cooldownBetweenActionsMs: 4000,
+    // Which logged-in Gmail account tab to drive: mail/u/<N>/. 0 = first/default account.
+    gmailAccountIndex: 0,
+    // Email (mailer) pacing [min,max] ms between sends. Email carries NO LinkedIn-restriction
+    // risk — only Gmail throttling, which is generous — so it is deliberately brisk and is NOT
+    // the heavy Easy-Apply cooldown. Tune here if Gmail ever complains.
+    emailPaceMs: [4000, 9000],
+    // Easy Apply account-safety: stop at this fraction of the (daily-refreshed) LinkedIn limit,
+    // and wait a randomized [min,max] ms AFTER each successful Easy Apply so submissions never
+    // burst. See src/limits.js for the researched daily limit.
+    easyApplySafetyBuffer: 0.8,
+    easyApplyCooldownMs: [90000, 240000],
   },
 
   // Self-improvement is ON by default — JobPilot contributes code/doc fixes + files blocker
@@ -98,6 +113,11 @@ const DEFAULT_PROFILE = {
   consent: {
     autoContribute: true,   // push code/doc improvements + file issues to the public repo automatically
     selfEvolveShare: true,  // share anonymized evolution insights upstream
+    // Multi-brain self-evolution loop: let INSTALLED coding-agent CLIs (codex, grok, claude,
+    // gemini, …) take turns reasoning over open encounters and pushing code/doc fixes UNATTENDED.
+    // Strictly CLIs — never API keys. OFF by default: it's a bigger step than autoContribute
+    // because external brains commit/PR on their own. Opt in from the dashboard or onboarding.
+    autoBrainLoop: false,
   },
 
   _onboarded: false,
@@ -132,7 +152,30 @@ function persist(p) {
 }
 
 export function getProfile() {
-  return load();
+  const p = load();
+  // Auto-derive key fields from `answers` when the top-level fields weren't set directly,
+  // so the answer engine (answers.js) can use them without asking the user to re-enter data.
+  const a = p.answers || {};
+  if (!p.yearsExperience && a['years of experience']) p.yearsExperience = parseFloat(a['years of experience']) || 0;
+  if (!p.headline && a['cover letter summary']) p.headline = a['cover letter summary'].split('.')[0].trim().slice(0, 120);
+  if (!p.skills || !p.skills.length) {
+    // derive skills from preferences.keywords if available
+    const kw = (p.preferences && p.preferences.keywords) || [];
+    if (kw.length) p.skills = kw.slice(0, 15);
+  }
+  if (!p.workAuth || !p.workAuth.authorizedIn) {
+    const loc = (p.location || '').split(',').pop().trim() || '';
+    p.workAuth = {
+      ...p.workAuth,
+      authorizedIn: loc ? [loc] : [],
+      needsSponsorship: a['do you require visa sponsorship'] ? /yes/i.test(a['do you require visa sponsorship']) : undefined,
+      willingToRelocate: a['willing to relocate'] ? /yes|open/i.test(a['willing to relocate']) : undefined,
+    };
+  }
+  if (!p.summary && a['cover letter summary']) p.summary = a['cover letter summary'];
+  if (!p.education && a['highest education level']) p.education = a['highest education level'];
+  if (!p.country) p.country = (p.location || '').split(',').pop().trim();
+  return p;
 }
 
 function normalizeCompany(value = '') {

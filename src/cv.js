@@ -9,8 +9,19 @@ import crypto from 'crypto';
 import { DATA } from './config.js';
 
 const GENERIC = new Set('a an and as at by for from in into of on or the to with engineer engineering remote cloud platform infrastructure solution architect architecture operations reliability site devops'.split(' '));
-const TECH_TERMS = 'aws azure gcp kubernetes terraform docker linux jenkins github actions gitlab argocd helm ansible pulumi prometheus grafana istio vault nomad nginx apache python bash golang java powershell vmware eks aks gke openshift helm cloudformation'.split(' ');
+const TECH_TERMS = 'aws azure gcp kubernetes terraform docker linux jenkins github actions gitlab argocd helm ansible pulumi prometheus grafana istio vault nomad nginx apache python bash golang java powershell vmware eks aks gke openshift helm cloudformation fastapi langchain langgraph rag llm pytorch tensorflow postgresql redis celery pinecone chromadb'.split(' ');
 const OUT_OF_SCOPE_ROLE = /\b(ai|ml|machine learning|data scientist|software engineer|backend|frontend|full[ -]?stack|developer|manager|training)\b/i;
+
+// A sensible default "out of scope" list used ONLY when the profile has no skip list.
+// NOTE: this is deliberately NOT the user's target roles. The old hardcoded version
+// listed ai/backend/developer/full-stack here, which hard-skipped the user's own target
+// roles. The out-of-scope filter must come from the profile's `skip` preferences.
+const DEFAULT_SKIP = ['sales', 'intern', 'data entry', 'manual testing', 'recruiter', 'hr '];
+function outOfScopeFromProfile(profile) {
+  const skip = (profile?.preferences?.skip?.length ? profile.preferences.skip : DEFAULT_SKIP)
+    .map(s => String(s).trim().toLowerCase()).filter(Boolean);
+  return skip;
+}
 
 function words(value = '') {
   return String(value).toLowerCase().replace(/[^a-z0-9+#.]+/g, ' ').split(/\s+/)
@@ -27,12 +38,30 @@ export const TARGET_ROLES = [
 
 function roleAligned(text, profile, checkScope = true) {
   const hay = norm(text);
-  const title = String(text || '');
+  // De-spaced haystack so hashtag/glued post titles like "#AIEngineer" or "#SeniorBackendEngineer"
+  // (which norm() collapses to "aiengineer" / "seniorbackendengineer") still match a role/keyword
+  // whose spaces we also strip (e.g. "ai engineer" -> "aiengineer"). This is the #1 reason real
+  // LinkedIn-post leads were being wrongly skipped as "not aligned".
+  const glued = hay.replace(/\s+/g, '');
+  const title = String(text || '').toLowerCase();
   if (checkScope && OUT_OF_SCOPE_ROLE.test(title)) return false;
+  // Only hard-skip when the title clearly matches the user's OWN skip list
+  // (e.g. "sales", "intern"). Never skip on the user's target-role keywords.
+  const skip = outOfScopeFromProfile(profile);
+  if (skip.some(s => s && title.includes(s))) return false;
   const roles = (profile.preferences?.roles?.length ? profile.preferences.roles : TARGET_ROLES);
+  // Aligned if the title/text references any target role OR any target keyword/skill —
+  // checked both spaced (word-boundary) and glued (hashtag) forms.
+  const keywordHit = [
+    ...(profile.preferences?.keywords || []),
+    ...(profile.skills || []),
+  ].map(norm).some(k => k && k.length > 2 && (hay.includes(k) || glued.includes(k.replace(/\s+/g, ''))));
+  if (keywordHit) return true;
   return roles.some(role => {
     const key = norm(role);
-    return key && (hay.includes(key) || words(role).filter(x => x.length > 3).filter(x => hay.includes(x)).length >= 2);
+    if (!key) return false;
+    if (hay.includes(key) || glued.includes(key.replace(/\s+/g, ''))) return true;
+    return words(role).filter(x => x.length > 3).filter(x => hay.includes(x)).length >= 2;
   });
 }
 

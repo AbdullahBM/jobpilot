@@ -87,10 +87,12 @@ and a saved **screenshot + HTML snapshot** under `data/evolution/`. Then it:
   opens a **PR to the main repo** for every change. When a PR merges, it **syncs again** so the
   fork never drifts.
 - **If you own the main repo** → the evolver **reviews and merges every open PR** — from this agent
-  *and* from other contributors' forks. It approves pending fork CI so the security gate can run,
-  merges useful PRs (even forcing past a stuck mechanical auto-merge), resolves conflicts where it
-  can, and closes empty/redundant PRs. **The one gate never bypassed is the CI security/data-safety
-  check** — a failing security gate blocks the merge no matter who opened the PR.
+  *and* from other contributors' forks. Each PR is judged on **usefulness** — the merits of its diff
+  plus any issues it links — **not on its label or author**. It approves pending fork CI so the
+  security gate can run, merges useful PRs (even forcing past a stuck mechanical auto-merge),
+  resolves conflicts where it can, and detects superseded/redundant PRs and closes them. **The one
+  gate never bypassed is the CI security/data-safety check** — a failing security gate blocks the
+  merge no matter who opened the PR.
 - Commits are authored as the **GitHub username** (never a real/personal name), with the account's
   noreply email. Hard-guarded: the push aborts if anything under `data/`, `.env*`, drafts, logs,
   screenshots, or the DB is ever staged.
@@ -137,9 +139,20 @@ one-click "log in here" banner, and it resumes automatically once you're back in
   logic, shows you everything it auto-answered, and escalates only the truly-unknown.
 - **A concurrent, never-stop worker** — scout · mailer · applier · connector · **evolver** run in
   parallel lanes under a supervisor that auto-restarts any lane that crashes; global crash handlers
-  + process respawn mean one bad lead or page never halts the pipeline.
+  + process respawn mean one bad lead or page never halts the pipeline. The detached worker is
+  designed to **outlive your agent session** — the MCP server does **not** write `data/.stop` when
+  the agent disconnects, so only an explicit user Stop (dashboard ⏹ / `npm run stop`) halts the loop.
 - **Self-evolution as a first-class lane** — the `evolver` runs at the same priority as applying:
   it syncs with `main` + reviews/merges open PRs every ~2 min and contributes every ~10 min.
+- **Usefulness-first PR review** — on the main repo, every open PR (any contributor, any fork, any
+  label) is judged on the merits of its diff plus the issues it links — not on its label or author.
+  Empty PRs are closed, superseded ones are detected and closed, conflicts are resolved where safe,
+  and the CI security/data-safety gate is the one check never bypassed.
+- **Country-scope action gating** — old/global queue entries and off-scope locations no longer leak
+  into outreach or applications when the profile is set to country scope.
+- **Tougher LinkedIn + form resilience** — note-less invites on custom-invite pages, a graceful
+  fallback when LinkedIn's free note quota is exhausted, and learned form-skips surfaced as
+  `needs_manual` (with the failing domain) instead of silently stalling leads.
 - **A modular pipeline dashboard** (`src/dashboard/` partials) with per-lane live status, a 🧠
   Questions tab (with 🤖 agent-answered review), and a 🧬 Evolution tab showing every blocker with
   its screenshot + HTML snapshot.
@@ -290,6 +303,11 @@ jobpilot/
   sensitive-path tripwire abort any push that would include `data/`, `.env`, drafts, logs,
   screenshots or the DB. Toggle it off from the dashboard anytime.
 - **Dedup is permanent**, and daily caps + attempt limits are enforced and recorded.
+- **Easy Apply is account-safe.** LinkedIn restricts accounts that over-apply, so JobPilot keeps a
+  daily-refreshed estimate of the real Easy Apply limit (conservative default 50/day) and **stops at
+  an 80% safety buffer** (e.g. 40/day) — then waits a randomized cooldown (~90–240s) after each
+  submission so applications never look like a bot-like burst. A bad or offline refresh never raises
+  the cap. Email, forms, and connect keep running when Easy Apply is paused.
 
 ---
 

@@ -11,7 +11,7 @@ import fs from 'fs';
 import { cvAttachmentForJob } from '../cv.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
-const CONFIRM_RE = /thank(s| you) for (applying|your (application|interest))|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)/i;
+const CONFIRM_RE = /thank(s| you) for (applying|your (application|interest))|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)|your application is (complete|submitted|received)|application submitted|applied successfully|you('ve| have) applied|congrat|we will be in touch|we.?ll be in touch|check your email.*application/i;
 
 const SCAN = () => {
   const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return (r.width > 0 || r.height > 0 || el.type === 'file' || el.type === 'radio' || el.type === 'checkbox') && s.visibility !== 'hidden'; };
@@ -47,7 +47,7 @@ const SCAN = () => {
 };
 
 // Job-board description pages (not real forms). Their apply link redirects to the true ATS.
-const BOARD_HOST = /(^|\.)(remoteok\.com|remotive\.com|jobicy\.com|himalayas\.app|weworkremotely\.com|wellfound\.com|arbeitnow\.com|aihackerjobs\.com)$/i;
+const BOARD_HOST = /(^|\.)(remoteok\.com|remotive\.com|jobicy\.com|himalayas\.app|weworkremotely\.com|wellfound\.com|arbeitnow\.com|aihackerjobs\.com|lnkd\.in|paperpk\.com|rozee\.pk|mustakbil\.com)$/i;
 const hostOf = u => { try { return new URL(u).hostname; } catch { return ''; } };
 
 // ── Indeed: extract the real ATS link embedded in the posting, or fall back to
@@ -128,13 +128,164 @@ async function toForm(page) {
   if (/jobs\.lever\.co\/[^/]+\/[0-9a-f-]{36}$/.test(u)) { await page.goto(u + '/apply', { waitUntil: 'domcontentloaded' }); return; }
   if (/jobs\.ashbyhq\.com\/[^/]+\/[0-9a-f-]{36}\/?$/.test(u)) { await page.goto(u.replace(/\/$/, '') + '/application', { waitUntil: 'domcontentloaded' }); return; }
 
-  const startHost = hostOf(u);
+  // lnkd.in shortlinks — follow the redirect to the real URL before processing as a form.
+  if (/lnkd\.in\//.test(u)) {
+    await SLEEP(3000); // let the initial redirect land
+    // Wait up to 8 seconds total for the URL to navigate away from lnkd.in.
+    await page.waitForURL(url => !url.includes('lnkd.in'), { timeout: 8000 }).catch(() => {});
+    const landed = page.url();
+
+    // LinkedIn safety interstitial: "This link will take you to a page that's not on LinkedIn"
+    // The page shows an artdeco-button <a> with the real external URL. Click it to proceed.
+    if (/linkedin\.com/.test(landed)) {
+      const externalHref = await page.evaluate(() => {
+        // artdeco-button <a> on the interstitial page that carries the real destination
+        for (const a of document.querySelectorAll('a[href], a.artdeco-button')) {
+          if (a.href && !a.href.includes('linkedin.com') && a.href.startsWith('http')) return a.href;
+        }
+        return null;
+      }).catch(() => null);
+      if (externalHref) {
+        await page.goto(externalHref, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        await SLEEP(2000);
+        return;
+      }
+      // Fallback: click the visible off-domain link on the interstitial
+      const interstitialLink = page.locator('a[href]:not([href*="linkedin.com"])').first();
+      if (await interstitialLink.isVisible({ timeout: 3000 }).catch(() => false)) {
+        const [popup] = await Promise.all([
+          page.context().waitForEvent('page', { timeout: 4000 }).catch(() => null),
+          interstitialLink.click().catch(() => {}),
+        ]);
+        if (popup) {
+          await popup.waitForLoadState('domcontentloaded').catch(() => {});
+          const dest = popup.url();
+          await popup.close().catch(() => {});
+          if (dest && !dest.includes('linkedin.com')) {
+            await page.goto(dest, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          }
+        } else {
+          await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+        }
+        await SLEEP(2000);
+        return;
+      }
+    }
+
+    if (/lnkd\.in\//.test(landed)) {
+      // Still on lnkd.in — try grabbing the canonical href from the page redirect element.
+      const href = await page.evaluate(() => {
+        const a = document.querySelector('a[href], meta[http-equiv="refresh"]');
+        if (a?.tagName === 'A') return a.href;
+        if (a?.tagName === 'META') { const m = a.content.match(/url=([^\s;]+)/i); return m ? m[1] : null; }
+        // Look for any anchor that doesn't point back to lnkd.in.
+        for (const el of document.querySelectorAll('a[href]')) {
+          if (!el.href.includes('lnkd.in') && el.href.startsWith('http')) return el.href;
+        }
+        return null;
+      }).catch(() => null);
+      if (href && !href.includes('lnkd.in')) {
+        await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      } else {
+        // Last resort: click any visible <a> link that isn't a lnkd.in URL.
+        const offDomain = page.locator('a[href]:not([href*="lnkd.in"])').first();
+        if (await offDomain.isVisible().catch(() => false)) {
+          await offDomain.click().catch(() => {});
+          await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+        }
+      }
+    }
+    await SLEEP(2000);
+  }
+
+  const startHost = hostOf(page.url());
   const onBoard = BOARD_HOST.test(startHost);
   // On a real ATS page that already shows a form, stop.
   if (!onBoard) {
     const fileInputs = await page.locator('input[type="file"]').count();
     const textInputs = await page.locator('input[type="text"]:visible, input[type="email"]:visible').count();
     if (fileInputs || textInputs >= 2) return;
+  }
+
+  // Himalayas.app — find the "Apply now" external link pointing to real ATS.
+  if (/himalayas\.app/.test(startHost)) {
+    // First, try clicking an "Apply now" / "Apply" button — it may trigger a modal or navigate.
+    const applyBtn = page.locator('a[href*="apply"], button').filter({ hasText: /apply( now)?/i }).first();
+    if (await applyBtn.isVisible().catch(() => false)) {
+      const [popup] = await Promise.all([
+        page.context().waitForEvent('page', { timeout: 4000 }).catch(() => null),
+        applyBtn.click().catch(() => {}),
+      ]);
+      if (popup) {
+        await popup.waitForLoadState('domcontentloaded').catch(() => {});
+        const popupUrl = popup.url();
+        await popup.close().catch(() => {});
+        if (popupUrl && !popupUrl.includes('himalayas.app')) {
+          await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          await SLEEP(2500);
+          return;
+        }
+      }
+      await SLEEP(2000);
+      // If the click navigated away from himalayas, we're done.
+      if (!page.url().includes('himalayas.app')) { await SLEEP(1000); return; }
+    }
+    // Now scan for ATS links (post-click modal content may have added new links).
+    const atsUrl = await page.evaluate(() => {
+      for (const a of document.querySelectorAll('a[href]')) {
+        if (/(greenhouse|lever\.co|ashbyhq|workable|smartrecruiters|bamboohr|jobvite|teamtailor|rippling|personio|apply)/i.test(a.href)
+          && !a.href.includes('himalayas.app')) return a.href;
+      }
+      // fallback: any off-domain link in an apply/cta button
+      for (const a of document.querySelectorAll('a[href]')) {
+        const txt = (a.innerText || '').toLowerCase();
+        if ((txt.includes('apply') || txt.includes('apply now')) && !a.href.includes('himalayas.app')) return a.href;
+      }
+      return null;
+    }).catch(() => null);
+    if (atsUrl) { await page.goto(atsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); await SLEEP(2500); return; }
+  }
+
+  // Jobicy.com — detect off-site apply pattern early.
+  // Jobicy is a job board that links out to the employer's ATS via an auth-gated "Apply Now"
+  // button (jv-open-apply-auth). The page itself never contains a fillable application form.
+  // Strategy:
+  //   1. Check if there's a real embedded form (rare, template-version 1 layouts).
+  //   2. Otherwise look for any direct off-domain apply link in the jv-application-body or
+  //      in the page <head>/<meta> canonical; if found, navigate there directly.
+  //   3. If the auth gate is present (jv-open-apply-auth / jobs-offsite-apply-confirmation-banner),
+  //      return null so applyForm will report needs_manual — off-site auth flow, route via email/connect.
+  if (/jobicy\.com/.test(startHost)) {
+    const resolved = await page.evaluate(() => {
+      // 1. Real embedded form on the page?
+      const form = document.querySelector('#job-application form:not(.jobicy_unified_form):not(.jh-search), .application-form form');
+      if (form && form.querySelectorAll('input[type="text"], input[type="email"], textarea').length > 1) return { type: 'form' };
+      // 2. Direct external ATS link anywhere in the apply section
+      for (const a of document.querySelectorAll('.jv-application-body a[href], .jv-apply-section a[href], .candidates_can_apply a[href]')) {
+        if (a.href && !a.href.includes('jobicy.com') && /^https?:\/\//.test(a.href)) return { type: 'ats', url: a.href };
+      }
+      // 3. Any off-domain apply link on the page
+      for (const a of document.querySelectorAll('a[href]')) {
+        if (/apply/i.test(a.innerText + a.getAttribute('aria-label') || '') && a.href && !a.href.includes('jobicy.com') && /^https?:\/\//.test(a.href)) return { type: 'ats', url: a.href };
+      }
+      // 4. Auth-gated off-site apply (most common case) → signal needs_manual
+      if (document.querySelector('#jv-open-apply-auth, .jv-apply-primary, .jobs-offsite-apply-confirmation-banner')) return { type: 'offsite' };
+      return null;
+    }).catch(() => null);
+
+    if (resolved?.type === 'ats') {
+      await page.goto(resolved.url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await SLEEP(2000);
+      return; // continue to form-fill on the real ATS page
+    }
+    if (resolved?.type === 'form') {
+      // scroll to #job-application if present on same page
+      await page.evaluate(() => document.querySelector('#job-application')?.scrollIntoView()).catch(() => {});
+      await SLEEP(1000);
+      return;
+    }
+    // offsite or unresolved — signal via returning without navigating; applyForm will detect no form
+    return;
   }
 
   // Collect candidate apply links; on job boards follow them to the external ATS.
@@ -228,6 +379,14 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true, job = 
   page.setDefaultTimeout(15000);
   const unknown = new Set();
   const t0 = Date.now();
+  // Guard: these are never application-form hosts. Driving a form fill on a Gmail/accounts page or
+  // the LinkedIn feed is a mistake (it produced stale encounters like #49). Return no_form so the
+  // applier lane marks the lead 'skipped' (not 'failed') without ever navigating the page.
+  const NON_APPLY_HOST = /(^|\.)(mail\.google\.com|accounts\.google\.com)$|linkedin\.com\/feed/i;
+  if (NON_APPLY_HOST.test(url)) {
+    await page.close().catch(() => {});
+    return { ok: false, result: 'no_form', detail: 'non-application host (mail/accounts/feed)', finalUrl: url };
+  }
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await SLEEP(3500);
@@ -297,21 +456,64 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true, job = 
     // submit button usually sits at the very bottom of a long form, so it can be below the fold
     // where a sticky footer/overlay intercepts a plain click — hence the scroll + forced + JS
     // click fallbacks instead of a single click() that hangs until the actionability timeout.
-    const btn = page.locator(
-      'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"])'
-    ).first()
-      .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|^apply$/i }).last());
-    if (!(await btn.isVisible().catch(() => false))) { await encounter('form', 'form filled but no submit button on ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'no submit button', finalUrl }; }
+    // For jobicy.com, use a wider selector set with a longer timeout.
+    const isJobicy = /jobicy\.com/.test(hostOf(page.url()));
+    const btn = isJobicy
+      ? page.locator(
+          'button[type="submit"], input[type="submit"], .apply-btn, #apply-button, a.apply-button'
+        ).first()
+          .or(page.locator('button').filter({ hasText: /submit|apply/i }).first())
+        : page.locator(
+          'button[data-ui="apply-button"], [data-ui="submit"], button[type="submit"]:not([aria-disabled="true"]), input[type="submit"]'
+        ).first()
+          .or(page.getByRole('button', { name: /submit application|submit|send application|apply now|complete application|^apply$/i }).last())
+          .or(page.locator('a[role="button"]').filter({ hasText: /submit|apply now/i }).first());
+    const btnTimeout = isJobicy ? 8000 : 5000;
+    // Try to find the button even if it's currently not visible (off-screen / in sticky footer).
+    let btnExists = (await btn.count().catch(() => 0)) > 0;
+    if (!btnExists) {
+      // Last resort: any button at the bottom of the page whose text looks like submit.
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+      await SLEEP(800);
+      btnExists = (await btn.count().catch(() => 0)) > 0;
+    }
+    if (!btnExists || !(await btn.isVisible().catch(() => false)) && !(await btn.isEnabled().catch(() => false))) {
+      await encounter('form', 'form filled but no submit button on ' + hostOf(finalUrl), { url: finalUrl, page });
+      return { ok: false, result: 'needs_manual', detail: 'no submit button', finalUrl };
+    }
     await btn.scrollIntoViewIfNeeded().catch(() => {});
     await SLEEP(300);
-    let clicked = await btn.click({ timeout: 8000 }).then(() => true).catch(() => false);
-    if (!clicked) clicked = await btn.click({ force: true, timeout: 5000 }).then(() => true).catch(() => false);
+    let clicked = await btn.click({ timeout: btnTimeout }).then(() => true).catch(() => false);
+    if (!clicked) clicked = await btn.click({ force: true, timeout: btnTimeout }).then(() => true).catch(() => false);
     if (!clicked) clicked = await btn.evaluate(el => { el.click(); return true; }).catch(() => false);
     if (!clicked) { await encounter('form', 'submit button not clickable on ' + hostOf(finalUrl), { url: finalUrl, page }); return { ok: false, result: 'needs_manual', detail: 'submit button not clickable', finalUrl }; }
     for (let i = 0; i < 20; i++) {
       await SLEEP(1000);
       const t = await page.evaluate(() => document.body.innerText).catch(() => '');
       if (CONFIRM_RE.test(t) || /\/(thanks|thank-you|confirmation|success)/i.test(page.url())) return { ok: true, result: 'submitted', detail: 'confirmation page shown', finalUrl };
+      // Jobicy-specific confirmation: dashboard/my-applications tab visible, URL changed to profile/dashboard,
+      // or jobicy appends ?registered=<email> to the job URL after a successful application.
+      if (isJobicy && (
+        await page.locator('#tab-my-applications').isVisible().catch(() => false) ||
+        /\/(my-applications|dashboard|profile)/i.test(page.url()) ||
+        /[?&]registered=/i.test(page.url())
+      )) return { ok: true, result: 'submitted', detail: 'jobicy — application registered (confirmed via URL params)', finalUrl };
+      // Jobicy guest-apply verification gate: after submit, jobicy shows an email-OTP step
+      // (#step-verification / #code-inputs — "We sent a 6-digit code to this address") and/or a
+      // Cloudflare Turnstile CAPTCHA (#turnstile-wrapper / #jobicy-turnstile-widget). Neither can be
+      // completed automatically, so the 20 s wait would always time out and log a misleading
+      // "submitted but no confirmation" encounter (the dominant cause of encounter #6, ×8) while the
+      // lead gets re-attempted. Bail out early as needs_manual so it's routed via email/connect instead.
+      if (isJobicy && await page.evaluate(() => {
+        const vis = el => !!el && el.offsetParent !== null && !el.classList.contains('hidden-step');
+        return vis(document.querySelector('#step-verification')) ||
+               vis(document.querySelector('#code-inputs')) ||
+               vis(document.querySelector('#turnstile-wrapper')) ||
+               !!document.querySelector('#jobicy-turnstile-widget iframe');
+      }).catch(() => false)) {
+        await encounter('form', 'jobicy — email OTP / Turnstile verification gate after submit', { url: page.url(), page });
+        return { ok: false, result: 'needs_manual', detail: 'jobicy guest-apply needs email verification code + CAPTCHA — route via email/connect', finalUrl };
+      }
       if (/captcha|verify you are human/i.test(t) && i > 4) return { ok: false, result: 'needs_manual', detail: 'captcha after submit', finalUrl };
     }
     const errs = await page.locator('[role="alert"], .error, [class*="error"]').allInnerTexts().catch(() => []);
