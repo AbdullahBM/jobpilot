@@ -12,7 +12,7 @@ import path from 'path';
 import { launchChrome } from './mcp/chrome.js';
 import { verifyLogins } from './agent/browser.js';
 import { initDB, upsertJobs, setStatus, setFields, bumpAttempt, logEmail, log, getJob,
-  alreadyEmailed, alreadyApplied, alreadyConnected, logConnect, rows, doneToday } from './tracker.js';
+  alreadyEmailed, alreadyApplied, alreadyConnected, logConnect, rows, doneToday, isFakeEmail } from './tracker.js';
 import { liPosts, liJobs, hnHiring, publicBoards, relToIso } from './mcp/sources.js';
 import { easyApply } from './mcp/easyapply.js';
 import { applyForm } from './mcp/forms.js';
@@ -347,6 +347,11 @@ async function mailer() {
       continue;
     }
     // transient classified failure (cdp_unavailable, or interstitial not-logged-in): retry, no attempt burn
+    if (r && r.skipped) {
+      setStatus(j.url, isFakeEmail(j.email) ? 'fake' : 'skipped', r.detail || 'not a hiring contact');
+      say('mailer', `skip ${j.email} — ${r.detail}`);
+      continue;
+    }
     if (r && r.transient) {
       if (notLoggedIn(r.detail)) flagLogin('Gmail', 'Please log into Gmail in the JobPilot Chrome window — emailing is paused until you do');
       say('mailer', `transient (${r.detail}) — will retry, attempt not consumed`);
