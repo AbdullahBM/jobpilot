@@ -263,7 +263,10 @@ async function fillPage(page, dlg, ctx, job = {}) {
         if (f.val && !/select an option/i.test(f.val)) { if (!IDENTITY.test(f.q)) learn(f.q, f.val, 'harvested'); continue; }
         const selOpts = f.opts.slice(1);
         let pick = null;
-        const agentSel = agentAnswerFor(ctx, f.q);
+        // Identity selects (email / phone country code): pick the option matching the profile.
+        if (/e-?mail/i.test(f.q)) pick = selOpts.find(o => o.toLowerCase() === (p.email || '').toLowerCase()) || selOpts.find(o => /@/.test(o));
+        else if (/country code|phone/i.test(f.q)) pick = selOpts.find(o => /\(\+?92\)|pakistan/i.test(o));
+        const agentSel = pick ? undefined : agentAnswerFor(ctx, f.q);
         if (agentSel !== undefined) { const a = String(Array.isArray(agentSel) ? agentSel[0] : agentSel).toLowerCase(); pick = selOpts.find(o => o.toLowerCase() === a) || selOpts.find(o => o.toLowerCase().includes(a) || a.includes(o.toLowerCase())) || null; }
         if (!pick) pick = choiceAnswer(f.q, selOpts);
         // "How did you hear about this opportunity" (often an EMPTY-label select) → prefer a
