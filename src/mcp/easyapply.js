@@ -68,6 +68,13 @@ const SCAN = (dlg) => {
 
 const IDENTITY = /^(email|phone|mobile|first name|last name|city|location|country code|phone country code)/i;
 
+// OPTIONAL consent / marketing / follow checkboxes. These are never truly required to submit a
+// LinkedIn Easy Apply, so they must NEVER be parked as "needs your answer" (that was the main
+// cause of "opens Easy Apply but never submits" — one optional marketing opt-in blocked the whole
+// application). We simply leave them unchecked and move on.
+const OPTIONAL_CONSENT = /allow(ing)?\b.*\bcontact|contact me about|marketing|promotional|newsletter|future (job )?opportunities|future roles|future positions|keep me (informed|updated)|stay in touch|follow (the )?company|receive (updates|communications|emails)|opt[- ]?in|subscribe|share my (profile|data|information)|talent (community|network|pool)|join .* talent/i;
+const isOptionalConsent = q => OPTIONAL_CONSENT.test(String(q || ''));
+
 async function fillPage(page, dlg, ctx, job = {}) {
   const { fields } = await dlg.evaluate(SCAN);
   const p = getProfile();
@@ -94,6 +101,9 @@ async function fillPage(page, dlg, ctx, job = {}) {
       if (f.type === 'radio') continue;
       if (f.type === 'checkbox') {
         if (groupedCbIds.has(f.id)) continue; // part of a multi-option question → handled below
+        // Optional consent/marketing/follow boxes: never auto-check, uncheck if preselected,
+        // and never treat as blocking. These are the ones that used to stall the whole apply.
+        if (isOptionalConsent(f.q) || isOptionalConsent(f.optLabel)) { if (f.checked) await loc.uncheck({ force: true }).catch(() => {}); continue; }
         if (!f.checked && f.required) await loc.check({ force: true }).catch(() => {});
         if (f.checked && /follow/i.test(f.q + f.optLabel)) await loc.uncheck({ force: true }).catch(() => {});
         continue;
@@ -102,13 +112,13 @@ async function fillPage(page, dlg, ctx, job = {}) {
         if (f.val && !/select an option/i.test(f.val)) { if (!IDENTITY.test(f.q)) learn(f.q, f.val, 'harvested'); continue; }
         const pick = choiceAnswer(f.q, f.opts.slice(1));
         if (pick) await loc.selectOption({ label: pick }).catch(() => {});
-        else if (f.required) { ctx.unanswered.add(f.q); askLater(f.q, f.opts.slice(1)); }
+        else if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q, f.opts.slice(1)); }
         continue;
       }
       if (f.val && f.val.trim()) { if (!IDENTITY.test(f.q) && f.q.length > 8) learn(f.q, f.val.trim(), 'harvested'); continue; }
       const numeric = f.numeric || /how many|years|number of|salary|compensation|ctc|rate|expectation/i.test(f.q);
       const v = textAnswer(f.q, { numeric });
-      if (v == null || v === '') { if (f.required) { ctx.unanswered.add(f.q); askLater(f.q); } continue; }
+      if (v == null || v === '') { if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q); } continue; }
       await loc.fill(String(v));
       ctx.used.push(f.q);
       if (f.role === 'combobox' || /city|location/i.test(f.q)) {
@@ -127,7 +137,10 @@ async function fillPage(page, dlg, ctx, job = {}) {
     if (checked) { if (learnable && checked.optLabel) learn(g[0].q, checked.optLabel, 'harvested'); continue; }
     const pick = choiceAnswer(g[0].q, g.map(r => r.optLabel));
     if (process.env.DEBUG_EA) console.log('RADIO', JSON.stringify({ q: g[0].q, opts: g.map(r => r.optLabel), pick }));
-    if (!pick) { ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, g.map(r => r.optLabel)); continue; }
+    if (!pick) {
+      if (isOptionalConsent(g[0].q)) continue; // optional consent radio → don't block
+      ctx.unanswered.add(g[0].q); if (learnable) askLater(g[0].q, g.map(r => r.optLabel)); continue;
+    }
     // The role=radio WRAPPER carries aria-label=question and the visible option text.
     // Clicking the wrapper is what registers (hidden <input> ignores synthetic clicks).
     const wrap = dlg.getByRole('radio', { name: g[0].q, exact: false }).filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
@@ -155,7 +168,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
     if (!picks.length) { const other = labels.find(l => /^(other|none|n\/?a|prefer not)/i.test(l)); if (other) picks = [other]; }
     if (process.env.DEBUG_EA) console.log('CBGROUP', JSON.stringify({ q, opts: labels, picks }));
     if (!picks.length) {
-      if (g[0].required) { ctx.unanswered.add(q); askLater(q, labels); }
+      if (g[0].required && !isOptionalConsent(q)) { ctx.unanswered.add(q); askLater(q, labels); }
       continue;
     }
     for (const pick of picks) {

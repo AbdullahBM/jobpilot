@@ -17,6 +17,7 @@ import { fillAndSubmit, linkedinEasyApply, linkedinDM, linkedinConnect } from '.
 import { easyApply } from './src/mcp/easyapply.js';
 import { applyForm } from './src/mcp/forms.js';
 import { connect as liConnect } from './src/mcp/connect.js';
+import { commentInterested } from './src/mcp/comment.js';
 import { liPosts, liJobs, hnHiring, redditHiring, publicBoards } from './src/mcp/sources.js';
 import { initEvolve, pendingQuestions, allAnswers, learn, openEncounters, resolveEncounter, writePlaybook, strategyTable } from './src/evolve.js';
 import { buildQueries, buildListingQueries } from './src/mcp/queries.js';
@@ -261,6 +262,17 @@ const TOOLS = [
       return ok(await timed('linkedin_connect', profileUrl, { profileUrl }, limit, async () => {
         const r = await liConnect({ profileUrl, posterName, role, company, dryRun });
         return r;
+      }));
+    },
+  },
+  {
+    name: 'comment_interested',
+    description: "Comment 'Interested' (a short, profile-personalized note) on a LinkedIn hiring POST so the poster sees engagement. Pass the post URL (feed/update or /posts/). Verifies the comment landed. Use for hiring posts where you want an extra touchpoint alongside email/connect. result: commented|already_commented|no_comment_box|error.",
+    inputSchema: { type: 'object', properties: { postUrl: { type: 'string' }, role: { type: 'string' }, company: { type: 'string' }, text: { type: 'string', description: 'optional custom comment; omit to auto-generate from profile' }, dryRun: { type: 'boolean' } }, required: ['postUrl'] },
+    handler: async ({ postUrl, role, company, text, dryRun = false }) => {
+      const limit = getProfile().limits.maxAttemptsPerJob;
+      return ok(await timed('comment_interested', postUrl, { postUrl }, limit, async () => {
+        return await commentInterested({ postUrl, role, company, text, dryRun });
       }));
     },
   },
