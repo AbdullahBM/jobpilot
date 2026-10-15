@@ -158,6 +158,15 @@ export function textAnswer(question, { numeric = false } = {}) {
     if (sal != null && sal !== '') { recordAgentAnswer(question, sal, 'currency-aware salaryFor'); return sal; }
   }
 
+  // LinkedIn sometimes asks for notice period as a numeric day count. Do this before
+  // evolution memory so an older human-readable answer like "2 weeks" cannot leak into
+  // a numeric-only field.
+  if (/notice period[^?]*\bdays?\b/.test(q)) {
+    const days = String(parseInt(ans(p, 'notice period', '14')) || 14);
+    recordAgentAnswer(question, days, 'notice period from profile (days)');
+    return days;
+  }
+
   // 1. Evolution memory (user-taught or harvested) — highest trust.
   //    Guard: never accept a numeric '0' from a HARVESTED answer for a years question — that is
   //    almost always a different tech harvested as 0 that fuzzy-matched. User-set 0 is kept.
@@ -208,10 +217,11 @@ export function textAnswer(question, { numeric = false } = {}) {
   } else if (/country/.test(q)) {
     derived = p.country || (p.location || '').split(',').pop().trim() || null; basis = 'country from profile';
   } else if (/notice period|how soon|start date|when can you start|availability to start/.test(q)) {
-    derived = numeric
+    const daysOnly = /notice period[^?]*\bdays?\b/.test(q);
+    derived = numeric || daysOnly
       ? String(parseInt(ans(p, 'notice period', '14')) || 14)
       : ans(p, 'notice period', '2 weeks');
-    basis = 'notice period from profile';
+    basis = daysOnly ? 'notice period from profile (days)' : 'notice period from profile';
   } else if (/hours.*(week|per)/.test(q)) {
     derived = '40'; basis = 'standard 40h/week';
   } else if (/headline|current (title|role|position)|job title/.test(q)) {
