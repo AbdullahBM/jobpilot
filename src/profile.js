@@ -72,6 +72,8 @@ const DEFAULT_PROFILE = {
     // Off by default. When enabled, a job-specific draft may be generated from
     // canonical CV/profile facts after the dashboard explicitly records approval.
     allowTailoredCv: false,
+    // Outreach policy. `email_first` drains cold-email leads before Easy Apply.
+    outreachPriority: 'balanced',
     // Optional local CV variants. Each entry is { id, label, path, focuses, keywords }.
     // Paths are per-user data and must never be committed or shared upstream.
     cvVariants: [],

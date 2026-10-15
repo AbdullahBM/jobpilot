@@ -71,6 +71,14 @@ function emailPaceRange() {
   if (Array.isArray(v) && v.length === 2 && v.every(n => Number.isFinite(n) && n >= 0) && v[1] >= v[0]) return v;
   return [4000, 9000];
 }
+
+// When the user prefers cold outreach, Easy Apply yields while eligible email leads
+// remain. Scouting and the mailer stay concurrent, so this drains without starving
+// discovery or requiring a second worker.
+function pendingEmailLeads() {
+  if (getProfile().preferences?.outreachPriority !== 'email_first') return 0;
+  return queue('email', 50).filter(j => !alreadyEmailed(j.email) && !alreadyApplied(j.company, j.role)).length;
+}
 const RUN_MS = +(process.env.RUN_MS || 0) || Infinity; // 0/absent = run forever
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
@@ -357,7 +365,11 @@ async function applier() {
     let appliedEasy = false;     // set when an Easy Apply submission succeeds → longer cooldown
     const liCooling = Date.now() < liCooldownUntil || needsLogin('LinkedIn');
     // While LinkedIn is cooling down OR needs a login, only run the forms side (non-LinkedIn traffic).
-    const doEasy = liCooling ? false : turn++ % 2 === 0;
+    const emailBacklog = pendingEmailLeads();
+    const alternatingEasy = turn++ % 2 === 0;
+    const emailFirst = getProfile().preferences?.outreachPriority === 'email_first';
+    const doEasy = liCooling ? false : (!emailFirst || emailBacklog === 0) && alternatingEasy;
+    if (emailFirst && emailBacklog > 0 && !doEasy) beat('applier', `email-first: ${emailBacklog} cold-email lead(s) pending`);
     const chan = doEasy ? 'easy_apply' : 'form';
     const capType = doEasy ? 'li_easy_apply' : 'portal_apply';
     if (doEasy) {

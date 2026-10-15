@@ -333,7 +333,7 @@ export function choiceAnswer(question, options) {
   } else if (/english|proficien/.test(q)) {
     derived = find(/native|bilingual|fluent|professional/) || opts[opts.length - 1];
     basis = 'default English proficiency';
-  } else if (/gender|race|ethnic|veteran|disab|pronoun|sexual/.test(q)) {
+  } else if (/gender|race|ethnic|veteran|disab|pronoun|sexual|non.?binary|prefer to self.?describe/.test(q)) {
     const profileGender = ans(p, 'gender', p.gender || '');
     derived = profileGender
       ? find(new RegExp(`^${escapeRegExp(profileGender)}$`, 'i')) || find(new RegExp(escapeRegExp(profileGender), 'i'))
