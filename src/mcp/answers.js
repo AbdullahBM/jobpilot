@@ -20,6 +20,10 @@ function ans(p, key, dflt = '') {
   return a[key] != null && a[key] !== '' ? String(a[key]) : dflt;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Approximate USD exchange rates for salary conversion. */
 const FX = { usd: 1, eur: 0.92, gbp: 0.79, pkr: 280, inr: 84, aed: 3.67, cad: 1.37 };
 
@@ -320,8 +324,11 @@ export function choiceAnswer(question, options) {
     derived = find(/native|bilingual|fluent|professional/) || opts[opts.length - 1];
     basis = 'default English proficiency';
   } else if (/gender|race|ethnic|veteran|disab|pronoun|sexual/.test(q)) {
-    derived = find(/decline|prefer not|don.?t wish|not to|rather not/) || null;
-    basis = 'prefer-not-to-say for demographic questions';
+    const profileGender = ans(p, 'gender', p.gender || '');
+    derived = profileGender
+      ? find(new RegExp(`^${escapeRegExp(profileGender)}$`, 'i')) || find(new RegExp(escapeRegExp(profileGender), 'i'))
+      : find(/decline|prefer not|don.?t wish|not to|rather not/);
+    basis = profileGender ? 'gender from profile' : 'prefer-not-to-say for demographic questions';
   } else if (/country|code/.test(q)) {
     const c = (p.country || (p.location || '').split(',').pop() || '').trim().toLowerCase();
     derived = c ? opts.find(o => o.toLowerCase().includes(c)) || null : null;
