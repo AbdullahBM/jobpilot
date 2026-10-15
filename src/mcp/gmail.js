@@ -9,6 +9,28 @@ import path from 'path';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 
+async function visibleEditableBody(page) {
+  const selectors = [
+    'div[aria-label="Message Body"][contenteditable="true"]',
+    'div[aria-label*="message body" i][contenteditable="true"]',
+    'div[role="textbox"][contenteditable="true"]',
+    'div[contenteditable="true"].Am.Al.editable',
+    '[contenteditable="true"][g_editable="true"]',
+  ];
+  for (let attempt = 0; attempt < 8; attempt++) {
+    for (const selector of selectors) {
+      const matches = page.locator(selector);
+      const count = await matches.count().catch(() => 0);
+      for (let i = 0; i < count; i++) {
+        const candidate = matches.nth(i);
+        if (await candidate.isVisible().catch(() => false)) return candidate;
+      }
+    }
+    await SLEEP(500);
+  }
+  return null;
+}
+
 export async function sendViaGmail({ to, subject, body, attachmentPath }) {
   // Keep context/page creation INSIDE the try so a CDP/connect failure is CLASSIFIED as a
   // transient error (retry later, attempt NOT burned) instead of throwing out of the function.
@@ -73,10 +95,12 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
     await subjectInput.fill(subject);
 
     // Body
-    const bodyBox = page.locator('div[aria-label="Message Body"][contenteditable="true"]')
-      .or(page.locator('div[role="textbox"][contenteditable="true"]')).first();
+    const bodyBox = await visibleEditableBody(page);
+    if (!bodyBox) return { ok: false, result: 'failed', detail: 'Gmail compose body not ready', transient: true };
     await bodyBox.click();
-    await bodyBox.fill(body);
+    await bodyBox.fill(body).catch(async () => {
+      await page.keyboard.insertText(body);
+    });
 
     // Attachment
     let attached = false;
