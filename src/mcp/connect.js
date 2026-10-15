@@ -92,7 +92,12 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // that NAVIGATES the page (full navigation, not an overlay). We capture the URL before clicking
     // so we can detect navigation and handle the custom-invite page directly.
     const urlBefore = page.url();
-    await connectEl.click().catch(() => {});
+    // LinkedIn can leave a transparent/stale overlay over the visible top-card control. Retry
+    // with a forced trusted click, then a DOM click, before waiting for the invite UI; otherwise
+    // the driver waits on a dialog that the first click never opened.
+    let connectClicked = await connectEl.click({ timeout: 5000 }).then(() => true).catch(() => false);
+    if (!connectClicked) connectClicked = await connectEl.click({ force: true, timeout: 3000 }).then(() => true).catch(() => false);
+    if (!connectClicked) connectClicked = await connectEl.evaluate(el => { el.click(); return true; }).catch(() => false);
     // Wait up to 6 s for either: a dialog to appear, OR a navigation away from the profile page.
     // LinkedIn 2026 uses a SPA router that may change the URL without firing waitForNavigation —
     // so we poll the URL manually as well.
