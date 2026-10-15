@@ -680,9 +680,19 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
       }
       const next = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
       if (!(await next.isVisible().catch(() => false))) { await encounter('easy_apply', 'no next/submit button', { url, page, scope: dlg }); break; }
-      await next.click().catch(() => {});
-      await SLEEP(1600);
-      const st = await dlg.evaluate(SCAN).catch(() => ({ progress: '', errors: [] }));
+      const beforeNext = await dlg.evaluate(SCAN).catch(() => ({ progress: '', errors: [] }));
+      await next.click({ timeout: 5000 }).catch(() => {});
+      await SLEEP(1800);
+      let st = await dlg.evaluate(SCAN).catch(() => ({ progress: '', errors: [] }));
+      // LinkedIn sometimes acknowledges the trusted Playwright click without advancing
+      // its React form state. If the page is still validation-clean and the same Next
+      // button remains visible, retry once with a forced click before classifying the
+      // application as stuck. This is scoped to a single step and avoids duplicate submits.
+      if (st.progress === beforeNext.progress && !st.errors.length && await next.isVisible().catch(() => false)) {
+        await next.click({ force: true, timeout: 3000 }).catch(() => {});
+        await SLEEP(1800);
+        st = await dlg.evaluate(SCAN).catch(() => ({ progress: '', errors: [] }));
+      }
       if (st.progress === lastProgress && st.progress) {
         same++;
         // a validation error usually means a numeric field got text, or a choice we didn't pick
