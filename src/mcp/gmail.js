@@ -99,7 +99,10 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
     await sendBtn.click({ timeout: 8000 }).catch(() => page.keyboard.press('Control+Enter'));
 
     let sent = false;
-    for (let i = 0; i < 20 && !sent; i++) {
+    // Gmail can accept the click without dispatching the send shortcut when the compose
+    // toolbar is re-rendering. Give the normal click a short confirmation window first; if
+    // the compose is still open, retry through Gmail's documented keyboard shortcut once.
+    for (let i = 0; i < 6 && !sent; i++) {
       await SLEEP(500);
       sent = await page.evaluate(() =>
         /Message sent|Sending\.\.\./i.test(document.body.innerText.slice(-4000)) ||
@@ -108,6 +111,17 @@ export async function sendViaGmail({ to, subject, body, attachmentPath }) {
     }
     // If compose window closed, that's also a success signal
     if (!sent) sent = !(await subjectInput.isVisible().catch(() => false));
+    if (!sent && await subjectInput.isVisible().catch(() => false)) {
+      await page.keyboard.press('Control+Enter').catch(() => {});
+      for (let i = 0; i < 10 && !sent; i++) {
+        await SLEEP(500);
+        sent = await page.evaluate(() =>
+          /Message sent|Sending\.\.\./i.test(document.body.innerText.slice(-4000)) ||
+          /Message sent/i.test(document.querySelector('[role="alert"]')?.innerText || '')
+        ).catch(() => false);
+      }
+      if (!sent) sent = !(await subjectInput.isVisible().catch(() => false));
+    }
     await SLEEP(1500);
     return sent
       ? { ok: true, result: 'sent', detail: `Sent to ${to}${attached ? ' with CV' : ''}` }
