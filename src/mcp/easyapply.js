@@ -316,7 +316,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
       // Salary/compensation fields: LinkedIn renders them type=text but silently rejects
       // non-numeric input (e.g. "Negotiable"), which blocks "Review" with no visible error.
       // Force a numeric answer for anything salary-shaped so the page can advance.
-      const isSalary = /salary|compensation|\bctc\b|expected pay|pay expectation|remuneration|\brate\b|were you making/i.test(f.q);
+      const isSalary = /salary|compensation|\bctc\b|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|remuneration|\brate\b|were you making/i.test(f.q);
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(f.q);
       const agentV = agentAnswerFor(ctx, f.q);
       let v = agentV !== undefined ? (Array.isArray(agentV) ? agentV.join(', ') : String(agentV)) : textAnswer(f.q, { numeric });
@@ -327,10 +327,10 @@ async function fillPage(page, dlg, ctx, job = {}) {
       // Salary fields: LinkedIn renders them type=text but silently rejects non-numeric input
       // (e.g. "Negotiable"), blocking Review with no error. Force clean numeric digits, and
       // convert to USD when the field explicitly asks for USD.
-      if (isSalary && (v == null || isNaN(parseFloat(String(v).replace(/[,\s]/g, ''))))) {
+      if (isSalary && numeric) {
         const wantUsd = /\busd\b|us ?dollar|\$/i.test(f.q);
         const sal = salaryFor(wantUsd ? f.q + ' usd' : f.q, getProfile(), true);
-        v = sal != null ? String(sal).replace(/[^\d]/g, '') : v;
+        if (sal != null) v = String(sal).replace(/[^\d]/g, '');
       }
       if (v == null || v === '') { if (f.required && !isOptionalConsent(f.q)) { ctx.unanswered.add(f.q); askLater(f.q); } continue; }
       // Respect the field's maxlength so a long cover-style answer isn't silently rejected
@@ -442,12 +442,12 @@ async function fillPage(page, dlg, ctx, job = {}) {
       if (f.val && String(f.val).trim() && !/select an option/i.test(f.val)) continue; // still filled
       if (!f.required) continue;
       const loc = page.locator(`[data-ja="${f.id}"]`);
-      const isSalary = /salary|compensation|\bctc\b|were you making|desired (pay|salary)|current (pay|salary)/i.test(f.q);
+      const isSalary = /salary|compensation|\bctc\b|financial expectations?|monthly gross|gross monthly|were you making|desired (pay|salary)|current (pay|salary)/i.test(f.q);
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(f.q);
       const agentV = agentAnswerFor(ctx, f.q);
       let v = agentV !== undefined ? (Array.isArray(agentV) ? agentV.join(', ') : String(agentV)) : textAnswer(f.q, { numeric });
       if ((v == null || v === '') && /which country.*(reside|live|based)|country of residence/i.test(f.q)) v = p.country || 'Pakistan';
-      if (isSalary && (v == null || isNaN(parseFloat(String(v).replace(/[,\s]/g, ''))))) { const s = salaryFor(/\busd\b|\$/i.test(f.q) ? f.q + ' usd' : f.q, p, true); if (s != null) v = String(s).replace(/[^\d]/g, ''); }
+      if (isSalary && numeric) { const s = salaryFor(/\busd\b|\$/i.test(f.q) ? f.q + ' usd' : f.q, p, true); if (s != null) v = String(s).replace(/[^\d]/g, ''); }
       if (v == null || v === '') continue;
       if (f.tag === 'SELECT') {
         const opts = (f.opts || []).slice(1); const a = String(v).toLowerCase();
@@ -506,7 +506,7 @@ async function analyzePage(dlg, ctx = {}) {
     }
     else if (f.tag === 'SELECT') { q = f.q; const agent = agentAnswerFor(ctx, f.q); const pick = agent !== undefined ? agent : choiceAnswer(f.q, (f.opts || []).slice(1)); decision = pick; reason = pick ? `select "${pick}"` : 'no select match'; }
     else { // text / textarea / tel
-      const isSalary = /salary|compensation|\bctc\b|were you making|desired (pay|salary)|current (pay|salary)/i.test(q);
+      const isSalary = /salary|compensation|\bctc\b|financial expectations?|monthly gross|gross monthly|were you making|desired (pay|salary)|current (pay|salary)/i.test(q);
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(q);
       const agent = agentAnswerFor(ctx, q);
       let v = agent !== undefined ? (Array.isArray(agent) ? agent.join(', ') : String(agent)) : textAnswer(q, { numeric });
