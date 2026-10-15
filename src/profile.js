@@ -22,6 +22,7 @@ const DEFAULT_PROFILE = {
   phone: '',
   location: '',
   country: '',
+  gender: '',
 
   // Context the answer engine uses so it rarely has to ask you
   headline: '',          // e.g. "Senior Software Engineer"
