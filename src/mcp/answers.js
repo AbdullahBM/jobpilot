@@ -151,7 +151,7 @@ export function textAnswer(question, { numeric = false } = {}) {
   //     salaryFor() — the single source of truth — before any learned/profile-answer override
   //     (those were storing verbose strings like "280,000 PKR/month (negotiable)" that don't
   //     fit numeric fields or respect the question's currency).
-  if (/salary|compensation|\bctc\b|expected pay|pay expectation|remuneration|were you making|desired (pay|salary)|current (pay|salary)/.test(q)) {
+  if (/salary|compensation|\bctc\b|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|remuneration|were you making|desired (pay|salary)|current (pay|salary)/.test(q)) {
     const sal = salaryFor(question, p, numeric);
     if (sal != null && sal !== '') { recordAgentAnswer(question, sal, 'currency-aware salaryFor'); return sal; }
   }
@@ -182,7 +182,7 @@ export function textAnswer(question, { numeric = false } = {}) {
 
   if (/how many years|years of (work |professional )?experience|years experience|experience (do you have|in years)/.test(q)) {
     derived = years || null; basis = 'yearsExperience from profile';
-  } else if (/salary|compensation|expected pay|pay expectation|\bctc\b|remuneration|\brate\b|expectation/.test(q)) {
+  } else if (/salary|compensation|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|\bctc\b|remuneration|\brate\b|expectation/.test(q)) {
     derived = salaryFor(q, p, numeric); basis = 'salary from profile';
   } else if (/first name|given name/.test(q)) {
     derived = p.firstName || first || null; basis = 'name from profile';
