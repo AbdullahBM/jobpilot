@@ -122,12 +122,25 @@ const SCAN = (dlg) => {
       if (inputs.length < 2) return;
       let question = (inputs[0].getAttribute('aria-label') || fsEl.querySelector('legend')?.innerText || '').replace(/\s+/g, ' ').trim();
       if (!question) {
-        let prev = fsEl.previousElementSibling, hops = 0;
-        while (prev && hops < 4 && !question) { const t = (prev.innerText || '').trim(); if (t && t.length < 160 && /\?|time ?zone|which|select|country|language|able to work/i.test(t)) question = t.split('\n').pop().trim(); prev = prev.previousElementSibling; hops++; }
+        let host = fsEl, hops = 0;
+        while (host && hops < 5 && !question) {
+          const prev = host.previousElementSibling;
+          const t = (prev?.innerText || '').trim();
+          if (t && t.length < 240 && /\?|time ?zone|which|select|country|language|able to work|hands-on|experience/i.test(t)) question = t.split('\n').pop().trim();
+          host = host.parentElement; hops++;
+        }
       }
       const qn = question.toLowerCase().replace(/\*+$/, '').trim();
       const lines = (fsEl.innerText || '').split('\n').map(s => s.trim()).filter(s => s && s.length < 40 && s.toLowerCase().replace(/\*+$/, '').trim() !== qn);
-      groupByIdx[gi] = { question: question.slice(0, 120), options: [...new Set(lines)].slice(0, inputs.length), isCheckbox: inputs[0].type === 'checkbox' };
+      const containerText = fsEl.parentElement?.innerText || '';
+      groupByIdx[gi] = {
+        question: question.slice(0, 120),
+        options: [...new Set(lines)].slice(0, inputs.length),
+        isCheckbox: inputs[0].type === 'checkbox',
+        // LinkedIn puts the required marker/error on the fieldset wrapper, not on the
+        // hidden checkbox inputs. Preserve that group-level requirement for validation.
+        required: fsEl.getAttribute('aria-required') === 'true' || /this field is required/i.test(containerText),
+      };
     });
   } catch {}
   // For radio groups whose option labels are not on the inputs (2026 LinkedIn), capture the
@@ -442,9 +455,10 @@ async function fillPage(page, dlg, ctx, job = {}) {
     if (!picks.length && /time ?zone|able to work in|which of the following|regions?|markets?/i.test(question)) {
       picks = [labels.find(l => /\bus\b|united states|u\.s\.|est|et\b|pst/i.test(l)) || labels.find(Boolean)].filter(Boolean);
     }
-    if (!picks.length && g[0].required) picks = [labels.find(l => /^(other|none|n\/?a|prefer not)/i.test(l)) || labels.find(Boolean)].filter(Boolean);
+    const groupRequired = !!g[0].required || !!gm?.required;
+    if (!picks.length && groupRequired) picks = [labels.find(l => !/^(none of the above|none|n\/?a|prefer not)/i.test(l)) || labels.find(Boolean)].filter(Boolean);
     if (process.env.DEBUG_EA) console.log('CBGROUP', JSON.stringify({ q: question, opts: labels, agent: agentC, picks }));
-    if (!picks.length) { if (g[0].required && !isOptionalConsent(question)) { ctx.unanswered.add(question); askLater(question, labels.filter(Boolean)); } continue; }
+    if (!picks.length) { if (groupRequired && !isOptionalConsent(question)) { ctx.unanswered.add(question); askLater(question, labels.filter(Boolean)); } continue; }
 
     let anyChecked = false;
     for (const pick of picks) {
@@ -454,7 +468,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
       anyChecked = anyChecked || ok;
     }
     if (anyChecked) ctx.used.push(question);
-    else if (g[0].required && !isOptionalConsent(question)) { ctx.unanswered.add(question); askLater(question, labels.filter(Boolean)); }
+    else if (groupRequired && !isOptionalConsent(question)) { ctx.unanswered.add(question); askLater(question, labels.filter(Boolean)); }
     await new Promise(r => setTimeout(r, 250)); // let the re-render settle before the next group
   }
 
@@ -523,6 +537,7 @@ async function analyzePage(dlg, ctx = {}) {
         const captured = (gm && gm.options?.length === g.length ? gm.options : null) || radioGroupOptions[(q || '').slice(0, 120)];
         const opts = raw.every(l => !l) ? (Array.isArray(captured) && captured.length === g.length ? captured : (g.length === 2 ? ['Yes', 'No'] : raw)) : raw;
         const already = g.some(c => c.checked);
+        const groupRequired = !!g.some(c => c.required) || !!gm?.required;
         const agent = agentAnswerFor(ctx, q);
         const pick = agent !== undefined ? (Array.isArray(agent) ? agent.join(', ') : String(agent)) : choiceAnswer(q, opts.filter(Boolean));
         const tzDefault = !pick && /time ?zone|able to work in|which of the following|regions?/i.test(q) ? (opts.find(o => /\bus\b|united states/i.test(o)) || opts.find(Boolean)) : null;
@@ -540,7 +555,8 @@ async function analyzePage(dlg, ctx = {}) {
       decision = v; reason = v != null ? 'answered from profile/rules' + (f.maxlength ? ` (max ${f.maxlength})` : '') : (isOptionalConsent(q) ? 'optional — skip' : 'UNRESOLVED');
     }
     const resolved = decision != null && decision !== '' || /skip|optional/i.test(reason);
-    plan.push({ q: String(q).slice(0, 70), kind, required: !!f.required, decision: decision == null ? null : String(decision).slice(0, 50), reason, resolved });
+    const required = !!f.required || (f.type === 'checkbox' && g.length >= 2 && !!groupByIdx[f.grpIdx]?.required);
+    plan.push({ q: String(q).slice(0, 70), kind, required, decision: decision == null ? null : String(decision).slice(0, 50), reason, resolved });
   }
 
   const blocking = plan.filter(x => x.required && !x.resolved);
