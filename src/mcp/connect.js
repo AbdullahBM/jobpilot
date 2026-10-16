@@ -11,6 +11,12 @@ import { encounter } from '../evolve.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 
+// ── Shared Send-button regex ──────────────────────────────────────────────────
+// Matches all known LinkedIn 2026 Send-button labels. Used by findSendButton,
+// the custom-invite block, and the classic dialog block so they all match the
+// same label set. Never matches the ad-feedback "Submit" text.
+const SEND_RE = /send without a note|send invitation|send now|^send$/i;
+
 export function connectNote({ posterName, role, company }) {
   const p = getProfile();
   const first = (posterName || '').split(/\s+/)[0];
@@ -38,6 +44,119 @@ async function mainCol(page, re) {
     }
   }
   return null;
+}
+
+// ── Unified Send-button resolver ──────────────────────────────────────────────
+// Returns the first matching Playwright Locator for the real Send control within
+// `scope`, or null. Uses OR'd strategies in priority order, all excluding <aside>
+// and the ad-feedback "Submit" buttons. This is shared by both the custom-invite
+// and classic-dialog code paths so that encounter #20 has a single fix point.
+//
+// Strategies (tried in order):
+//  1. role=button by accessible name (aria-label OR visible text matching SEND_RE)
+//  2. aria-label containing "send" on buttons/links not in aside
+//  3. button / role=button filtered by visible text matching SEND_RE, not in aside
+//  4. LAST RESORT: button[type="submit"] / input[type="submit"] — ONLY when the
+//     same scope also contains a <textarea> (the note form), AND the button is not
+//     in <aside>. This prevents matching the ad-feedback "Submit" buttons that
+//     caused encounter #20 (×48).
+//
+// When requireEnabled is true (default), candidates must also pass isEnabled().
+async function findSendButton(scope, { requireEnabled = true } = {}) {
+  // Strategy 1: role=button by accessible name (aria-label + visible text)
+  const byRole = scope.getByRole('button', { name: SEND_RE });
+  const byRoleCount = await byRole.count().catch(() => 0);
+  for (let i = 0; i < byRoleCount; i++) {
+    const el = byRole.nth(i);
+    const inAside = await el.evaluate(e => !!e.closest('aside')).catch(() => true);
+    if (inAside) continue;
+    const vis = await el.isVisible().catch(() => false);
+    if (!vis) continue;
+    if (requireEnabled) {
+      const en = await el.isEnabled().catch(() => false);
+      if (!en) continue;
+    }
+    return el;
+  }
+
+  // Strategy 2: aria-label containing "send" on buttons/links not in aside
+  const byAria = scope.locator('[aria-label*="send" i]:not(aside [aria-label*="send" i])');
+  const byAriaCount = await byAria.count().catch(() => 0);
+  for (let i = 0; i < byAriaCount; i++) {
+    const el = byAria.nth(i);
+    const vis = await el.isVisible().catch(() => false);
+    if (!vis) continue;
+    // Double-check not in aside (CSS :not may not cover all nesting)
+    const inAside = await el.evaluate(e => !!e.closest('aside')).catch(() => true);
+    if (inAside) continue;
+    if (requireEnabled) {
+      const en = await el.isEnabled().catch(() => false);
+      if (!en) continue;
+    }
+    return el;
+  }
+
+  // Strategy 3: button / role=button filtered by visible text matching SEND_RE
+  const allBtns = scope.locator('button, [role="button"]');
+  const allBtnsCount = await allBtns.count().catch(() => 0);
+  for (let i = 0; i < allBtnsCount; i++) {
+    const el = allBtns.nth(i);
+    const vis = await el.isVisible().catch(() => false);
+    if (!vis) continue;
+    const inAside = await el.evaluate(e => !!e.closest('aside')).catch(() => true);
+    if (inAside) continue;
+    const txt = await el.innerText().catch(() => '');
+    if (!SEND_RE.test(txt.trim())) continue;
+    if (requireEnabled) {
+      const en = await el.isEnabled().catch(() => false);
+      if (!en) continue;
+    }
+    return el;
+  }
+
+  // Strategy 4: type=submit ONLY when scope has a textarea (the note form)
+  const hasTa = await scope.locator('textarea').count().catch(() => 0);
+  if (hasTa > 0) {
+    const submitBtns = scope.locator('button[type="submit"], input[type="submit"]');
+    const submitCount = await submitBtns.count().catch(() => 0);
+    for (let i = 0; i < submitCount; i++) {
+      const el = submitBtns.nth(i);
+      const inAside = await el.evaluate(e => !!e.closest('aside')).catch(() => true);
+      if (inAside) continue;
+      const vis = await el.isVisible().catch(() => false);
+      if (!vis) continue;
+      if (requireEnabled) {
+        const en = await el.isEnabled().catch(() => false);
+        if (!en) continue;
+      }
+      return el;
+    }
+  }
+
+  return null;
+}
+
+// ── JS-evaluate Send-button finder (last resort, bypasses Playwright locators) ─
+// Returns true if a send button was found and clicked, false otherwise.
+// Mirrors the same label set and aside exclusion as findSendButton.
+async function jsFindAndClickSend(page) {
+  return page.evaluate(() => {
+    const btns = [...document.querySelectorAll('button, input[type="submit"], [role="button"]')];
+    const sendRe = /^send$|send invitation|send without a note|send now/i;
+    const target = btns.find(b => {
+      if (b.offsetParent === null) return false;
+      if (b.closest('aside')) return false;
+      const txt = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim();
+      // Only match type=submit when inside a form/dialog with a textarea (invite note form)
+      if (b.type === 'submit' && !sendRe.test(txt)) {
+        const inNoteForm = !!b.closest('form:has(textarea), div[role="dialog"]:has(textarea), dialog:has(textarea)');
+        return inNoteForm && !b.disabled;
+      }
+      return sendRe.test(txt) && !b.disabled;
+    });
+    if (target) { target.disabled = false; target.click(); return true; }
+    return false;
+  }).catch(() => false);
 }
 
 // LinkedIn opens a Premium upsell ("Send unlimited personalized invites with Premium" /
@@ -84,9 +203,16 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
       const more = await mainCol(page, /^more$/i);
       if (more) { await more.click().catch(() => {}); await SLEEP(1200); connectEl = page.getByRole('link', { name: /invite .* to connect|^connect$/i }).first(); if (!await connectEl.count().catch(() => 0)) connectEl = page.getByRole('menuitem', { name: /^connect/i }).first(); }
     }
+    // Step 6: fast-track follow-only profiles. When no Connect/Invite control was found
+    // but a main-column "Follow" button exists, classify immediately as no_connect rather
+    // than falling through into a dead invite path that later misfires as encounter #20.
     if (!connectEl || !(await connectEl.count().catch(() => 0))) {
+      const hasFollow = await mainCol(page, /^follow /i);
+      const detail = hasFollow
+        ? 'no Connect option (follow-only profile)'
+        : 'no Connect option (follow-only / limits)';
       await encounter('connect', 'no Connect control (follow-only or restricted)', { url: profileUrl, page });
-      await page.close(); return { ok: true, result: 'no_connect', detail: 'no Connect option (follow-only / limits)' };
+      await page.close(); return { ok: true, result: 'no_connect', detail };
     }
     // LinkedIn 2026: the Connect control is often an <a href="/preload/custom-invite/?vanityName=...">
     // that NAVIGATES the page (full navigation, not an overlay). We capture the URL before clicking
@@ -164,75 +290,36 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         await page.close();
         return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached custom-invite page' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' };
       }
-      // Click the submit button on the custom-invite page (starts disabled, enables after textarea
-      // fill). Prefer a submit scoped to a form/dialog that actually contains the note textarea —
-      // a bare page-wide `button[type="submit"]` also matches unrelated disabled feed/search
-      // "Submit" buttons (seen in encounter #20's snapshot), which never enable and cause a false
-      // "send button not found" after the retry loop.
+      // ── Find the send button using the unified resolver ─────────────────────────
+      // Prefer scoping to the invite form (form/dialog containing textarea) when one exists;
+      // fall back to the full page. Extra wait after fill to let React/Vue enable the submit.
+      if (usedNote) await SLEEP(1000);
       const inviteForm = page.locator('form:has(textarea), div[role="dialog"]:has(textarea), dialog:has(textarea)').first();
       const inviteFormCount = await inviteForm.count().catch(() => 0);
-      const submitScope = inviteFormCount ? inviteForm : page;
-      const submitOnPage = submitScope.locator('button[type="submit"], input[type="submit"]').first();
-      // Extra wait after fill to let the React/Vue change handler enable the submit button
-      if (usedNote) await SLEEP(1000);
-      // Retry up to 20×500 ms for the submit button to become enabled
-      let submitReady = false;
-      let submitEl = submitOnPage;
-      for (let i = 0; i < 20 && !submitReady; i++) {
-        const vis = await submitOnPage.isVisible().catch(() => false);
-        const en = await submitOnPage.isEnabled().catch(() => false);
-        if (vis && en) { submitReady = true; break; }
-        // Also check by JS scan (obfuscated classes may prevent Playwright enable detection).
-        // Only consider a submit button that lives in a form/dialog with a textarea (the invite
-        // note form) and is NOT in the aside — a bare first `button[type="submit"]` can be an aside
-        // ad-feedback dialog's "Submit", which never belongs to the invite.
-        if (i >= 1) {
-          const jsEnabled = await page.evaluate(() => {
-            const scope = document.querySelector('form:has(textarea), div[role="dialog"]:has(textarea), dialog:has(textarea)');
-            const btn = (scope || document).querySelector('button[type="submit"], input[type="submit"]');
-            return btn ? (!btn.closest('aside') && !btn.disabled && btn.offsetParent !== null) : false;
-          }).catch(() => false);
-          if (jsEnabled) { submitReady = true; break; }
+      const primaryScope = inviteFormCount ? inviteForm : page;
+
+      // Retry up to 20×500 ms for the send button to become visible and enabled
+      let sendBtn = null;
+      for (let i = 0; i < 20 && !sendBtn; i++) {
+        // Try the unified resolver (enabled required)
+        sendBtn = await findSendButton(primaryScope);
+        if (!sendBtn && primaryScope !== page) {
+          sendBtn = await findSendButton(page);
         }
-        // Also scan for any visible enabled send button by text (LinkedIn 2026 uses "Send" text)
-        if (i % 2 === 1) {
-          const wideSend = page.getByRole('button', { name: /send without a note|send invitation|send now|^send$/i }).first();
-          const wVis = await wideSend.isVisible().catch(() => false);
-          const wEn = await wideSend.isEnabled().catch(() => false);
-          if (wVis && wEn) { submitEl = wideSend; submitReady = true; break; }
-          // JS scan for any enabled button with send-like text (handles obfuscated classes),
-          // excluding aside buttons so the sidebar/ad-dialog controls never match.
-          const jsSendBtn = await page.evaluate(() => {
-            const btns = [...document.querySelectorAll('button, input[type="submit"]')];
-            return btns.some(b => {
-              if (b.closest('aside')) return false;
-              const txt = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
-              return /^send$|send invitation|send without a note|send now/.test(txt) && !b.disabled && b.offsetParent !== null;
-            });
-          }).catch(() => false);
-          if (jsSendBtn) { submitReady = true; break; }
+        // Also try with requireEnabled=false on later iterations (button may be briefly disabled)
+        if (!sendBtn && i >= 5) {
+          sendBtn = await findSendButton(primaryScope, { requireEnabled: false });
+          if (!sendBtn && primaryScope !== page) {
+            sendBtn = await findSendButton(page, { requireEnabled: false });
+          }
         }
+        if (sendBtn) break;
         await SLEEP(500);
       }
-      if (!submitReady) {
-        // Last-resort recovery before giving up (was the #1 encounter, ×48):
-        // 1) JS-click any visible send/submit control even if Playwright couldn't confirm it enabled
-        //    (LinkedIn's obfuscated classes defeat the isEnabled() heuristic on note-less invites).
-        const jsClicked = await page.evaluate(() => {
-          const btns = [...document.querySelectorAll('button, input[type="submit"]')];
-          const target = btns.find(b => {
-            if (b.offsetParent === null) return false;
-            if (b.closest('aside')) return false; // never the aside ad-feedback "Submit" buttons
-            const txt = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
-            // A type=submit only counts when it sits in a form/dialog that also has the note
-            // textarea — otherwise it may be an unrelated ad-feedback Submit outside the invite.
-            const inNoteForm = !!b.closest('form:has(textarea), div[role="dialog"]:has(textarea), dialog:has(textarea)');
-            const isSend = /^send$|send invitation|send without a note|send now/.test(txt) || (b.type === 'submit' && inNoteForm);
-            return isSend;
-          });
-          if (target) { target.disabled = false; target.click(); return true; }
-          return false;
-        }).catch(() => false);
+
+      if (!sendBtn) {
+        // Last-resort recovery: JS-click any visible send control (bypasses Playwright locators)
+        const jsClicked = await jsFindAndClickSend(page);
         if (jsClicked) {
           await SLEEP(3000);
           const body = await page.locator('body').innerText().catch(() => '');
@@ -250,8 +337,9 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         await page.close();
         return { ok: false, result: 'error', detail: 'send button not found on custom-invite page' };
       }
-      let sent = await submitEl.click({ timeout: 5000 }).then(() => true).catch(() => false);
-      if (!sent) sent = await submitEl.evaluate(el => el.click()).then(() => true).catch(() => false);
+      let sent = await sendBtn.click({ timeout: 5000 }).then(() => true).catch(() => false);
+      if (!sent) sent = await sendBtn.click({ force: true, timeout: 3000 }).then(() => true).catch(() => false);
+      if (!sent) sent = await sendBtn.evaluate(el => el.click()).then(() => true).catch(() => false);
       await SLEEP(3000);
       const bodyAfter = await page.locator('body').innerText().catch(() => '');
       if (/weekly invitation limit|reached the weekly|you.?ve reached/i.test(bodyAfter)) {
@@ -290,26 +378,17 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
           // Dismiss it and continue to the Send/pending detection, sending note-less.
           usedNote = false;
         }
+        // Step 5: When no "Add a note" and no textarea appeared, proceed directly to
+        // findSendButton for a note-less invite. Don't loop waiting for a textarea that
+        // will never appear — this dead-end was a contributor to encounter #20.
       }
     }
     if (dryRun) { await page.keyboard.press('Escape').catch(() => {}); await SLEEP(400); await page.getByRole('button', { name: /discard/i }).first().click({ timeout: 2500 }).catch(() => {}); await page.close(); return { ok: true, result: usedNote ? 'dry_note_ready' : 'dry_ready', detail: 'reached send' + (usedNote ? ' with note' : ''), note: usedNote ? note : '' }; }
 
+    // ── Find the invite dialog ────────────────────────────────────────────────────
     // The invite dialog (role=dialog / artdeco modal, or the 2026 native <dialog>) carries the
-    // Send control. IMPORTANT: do NOT use `has: getByRole('button', SEND_RE)` to locate the
-    // dialog — that filter ignores disabled buttons, so it fails while the send button is
-    // briefly disabled/animating after open.  Instead find the dialog by its always-present
-    // dismiss/close button, then look for send within it with a generous retry loop.
-    // LinkedIn 2026 uses "Send" / "Send invitation" / "Send now" / "Send without a note"
-    // in native <dialog> elements. The blanket `^submit$` was dropped: the snapshot proves the
-    // only `type="submit"` "Submit" buttons on this page belong to the aside ad-feedback dialogs
-    // ("Ad Options" / "Don't want to see this"), and matching them was the dominant cause of the
-    // ×48 "send button not found" misfire. The real invite submit is reached via the dialog-scoped
-    // `button[type="submit"]` lookup below, which requires a note textarea in the same scope.
-    const SEND_RE = /send without a note|send invitation|send now|^send$/i;
-    // Wait up to 8 s for ANY dialog/modal to appear after the Connect/Add-note click.
+    // Send control. Wait up to 8 s for ANY dialog/modal to appear after the Connect/Add-note click.
     // The 2026 LinkedIn UI uses obfuscated gfl* class names — we can't rely on .artdeco-modal.
-    // Cast a wide net: div[role="dialog"], native <dialog[open]>, any element with a dismiss/close
-    // button indicating a modal overlay is open, or a role=dialog nested anywhere.
     const inviteDlg = page.locator('div[role="dialog"], dialog[open], [data-test-modal], [data-artdeco-is-focused-dialog]').first();
     await inviteDlg.waitFor({ state: 'visible', timeout: 8000 }).catch(async () => {
       // 2026 LinkedIn may use a non-standard overlay without role=dialog.
@@ -324,71 +403,35 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // Build dialog scope — prefer narrowed scope but fall back to whole page
     const dlgCount = await inviteDlg.count().catch(() => 0);
     const dlgScope = dlgCount ? inviteDlg : page;
-    let send = dlgScope.getByRole('button', { name: SEND_RE }).first();
-    // Also try type=submit — but ONLY inside a form/dialog that also holds the note textarea,
-    // mirroring the custom-invite block. A bare dialog-wide `type="submit"` also matches the aside
-    // ad-feedback dialogs' "Submit" buttons (snapshot offsets 61863 / 120093), which never belong
-    // to an invite and never enable — that false match drove the ×48 "send button not found".
-    // NOTE: after filling the textarea (usedNote=true), the submit button becomes enabled —
-    // check for it regardless of enabled state first, then wait for it to enable.
-    const submitScope = page.locator('form:has(textarea), div[role="dialog"]:has(textarea), dialog:has(textarea)').first();
-    const submitScopeCount = await submitScope.count().catch(() => 0);
-    const submitBtn = (submitScopeCount ? submitScope : dlgScope).locator('button[type="submit"], input[type="submit"]').first();
-    // Retry up to 14×800 ms — the send button starts disabled and enables after the dialog animates in.
-    let sendVisible = false;
-    for (let i = 0; i < 14 && !sendVisible; i++) {
-      sendVisible = await send.isVisible().catch(() => false);
-      if (!sendVisible) {
-        // also try enabled check — button may be visible but still disabled
-        const enabled = await send.isEnabled().catch(() => false);
-        if (enabled) { sendVisible = true; break; }
-        // Try type=submit fallback within the dialog — check visibility only (may still be disabled briefly)
-        const subVis = await submitBtn.isVisible().catch(() => false);
-        const subEn = await submitBtn.isEnabled().catch(() => false);
-        if (subVis && subEn) { send = submitBtn; sendVisible = true; break; }
-        // If note was typed and submit is visible but still disabled, keep retrying (it will enable)
-        if (usedNote && subVis && i < 10) { await SLEEP(800); continue; }
-        // 2026 LinkedIn: try page-wide role=button scan every other iteration
-        if (i % 2 === 1) {
-          const wideSend = page.getByRole('button', { name: SEND_RE }).first();
-          if (await wideSend.isVisible().catch(() => false)) { send = wideSend; sendVisible = true; break; }
-        }
-        await SLEEP(800);
+
+    // ── Unified Send-button search with retry ─────────────────────────────────────
+    // Uses findSendButton with the dialog as primary scope and page as fallback.
+    // Retry up to 14×800 ms — the send button starts disabled and enables after the
+    // dialog animates in.
+    let send = null;
+    for (let i = 0; i < 14 && !send; i++) {
+      // Primary: search within the dialog scope
+      send = await findSendButton(dlgScope);
+      // Fallback: search the full page (button may be outside dialog scope)
+      if (!send) send = await findSendButton(page);
+      // On later iterations, also try with requireEnabled=false (button may still be animating)
+      if (!send && i >= 4) {
+        send = await findSendButton(dlgScope, { requireEnabled: false });
+        if (!send) send = await findSendButton(page, { requireEnabled: false });
       }
+      if (send) break;
+      await SLEEP(800);
     }
-    if (!sendVisible) {
+
+    if (!send) {
       // 2026 LinkedIn sometimes sends immediately on Connect click (no dialog / quota exhausted note path)
       // Check: Pending button, or "Pending" text anywhere in the top card area
       if (await mainCol(page, /^pending$/i)) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent instantly (no dialog)' }; }
       const bodyTxt = await page.locator('main').innerText().catch(() => '');
       if (/pending/i.test(bodyTxt.slice(0, 1000))) { await page.close(); return { ok: true, result: 'connected_no_note', detail: 'invite sent (pending state detected)' }; }
 
-      // Secondary scan: LinkedIn 2026 UI may render the send button outside the dialog scope
-      // or use aria-label variations not matched by the role query above.
-      const secondarySend = page.locator('button:not(aside button)').filter({ hasText: /^send$/i })
-        .or(page.locator('[aria-label*="send" i]:not(aside [aria-label*="send" i])')).first();
-      if (await secondarySend.isVisible().catch(() => false)) {
-        await secondarySend.click({ timeout: 5000 }).catch(() => {});
-        await SLEEP(3000);
-        if (await mainCol(page, /^pending$/i)) {
-          await page.close();
-          return { ok: true, result: 'connected_no_note', detail: 'invite sent via secondary send scan' };
-        }
-      }
-
-      // Tertiary scan: any button inside a modal, dialog, or overlay whose text includes "send".
-      // The 2026 UI uses gfl* obfuscated classes — use a JS evaluate to find any visible "send" button.
-      const jsSent = await page.evaluate(() => {
-        const buttons = [...document.querySelectorAll('button, input[type="submit"]')];
-        const sendBtn = buttons.find(b => {
-          if (b.closest('aside')) return false; // never the aside ad-feedback / sidebar buttons
-          const txt = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
-          return /^send$|send invitation|send without a note|send now/.test(txt) &&
-                 b.offsetParent !== null && !b.disabled;
-        });
-        if (sendBtn) { sendBtn.click(); return true; }
-        return false;
-      }).catch(() => false);
+      // Last-resort JS-click (bypasses Playwright locators entirely)
+      const jsSent = await jsFindAndClickSend(page);
       if (jsSent) {
         await SLEEP(3000);
         const pendingNow = !!(await mainCol(page, /^pending$/i));
@@ -399,15 +442,15 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
         }
       }
 
-      // Also try a broader send button scan on the full page as last resort
-      const pageSend = page.getByRole('button', { name: SEND_RE }).first();
-      if (await pageSend.isVisible().catch(() => false)) {
-        sendVisible = true;
-        await pageSend.click({ timeout: 5000 }).catch(() => {});
+      // Page-wide findSendButton one more time (may have appeared after JS interactions)
+      const lateSend = await findSendButton(page);
+      if (lateSend) {
+        await lateSend.click({ timeout: 5000 }).catch(() => {});
         await SLEEP(3000);
         await page.close();
-        return { ok: true, result: 'connected_no_note', detail: 'invite sent via page-level send button' };
+        return { ok: true, result: 'connected_no_note', detail: 'invite sent via late page-level send button' };
       }
+
       await encounter('connect', 'send button not found in invite dialog', { url: profileUrl, page });
       await page.close(); return { ok: false, result: 'error', detail: 'send button not found in invite dialog' };
     }
