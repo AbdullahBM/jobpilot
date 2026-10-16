@@ -36,6 +36,32 @@ async function clickEasyApplyControl(page, control) {
   return { ok: false, throttled: false, detail: lastError || 'Easy Apply control was not clickable' };
 }
 
+// LinkedIn can open the native dialog before its form is hydrated. During that interval the
+// dialog contains only a loader (and its Dismiss button), so filtering dialogs by Next/Review/
+// Submit incorrectly reports a real Easy Apply dialog as "not open". Keep the dialog handle
+// broad, then wait for the form controls to hydrate before handing it to the scanner.
+async function waitForEasyApplyDialog(page, timeout = 18000) {
+  const dlg = page.locator('dialog[open], [role="dialog"]:visible').first();
+  await dlg.waitFor({ state: 'visible', timeout }).catch(() => {});
+  if (!(await dlg.isVisible().catch(() => false))) return null;
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const text = await dlg.innerText().catch(() => '');
+    if (/safety reminder|safety tips|continue applying|apply to /i.test(text)) {
+      const action = dlg.getByRole('button', { name: /next|review|submit|continue/i }).first();
+      const link = dlg.getByRole('link', { name: /continue applying/i }).first();
+      if (await action.isVisible().catch(() => false) || await link.isVisible().catch(() => false)) return dlg;
+    }
+    const loader = dlg.locator('[data-testid="loader"], [role="progressbar"]').first();
+    if (!(await loader.isVisible().catch(() => false))) {
+      const action = dlg.getByRole('button', { name: /next|review|submit|continue/i }).first();
+      if (await action.isVisible().catch(() => false)) return dlg;
+    }
+    await SLEEP(500);
+  }
+  return dlg;
+}
+
 // In-page: tag every field in the dialog and describe it.
 const SCAN = (dlg) => {
   const qOf = (el) => {
@@ -591,15 +617,14 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
       await encounter('easy_apply', `Easy Apply control not clickable: ${clickResult.detail}`.slice(0, 580), { url, page });
       await page.close(); return { ok: false, result: 'error', detail: clickResult.detail, meta };
     }
-    let dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit|continue/i }) }).first();
-    await dlg.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-    if (!(await dlg.isVisible().catch(() => false))) {
+    let dlg = await waitForEasyApplyDialog(page);
+    if (!dlg) {
       // safety/"job search safety reminder" interstitial → continue
       const cont = page.getByRole('button', { name: /continue applying|^continue$/i }).first();
-      if (await cont.isVisible().catch(() => false)) { await cont.click(); await dlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {}); }
+      if (await cont.isVisible().catch(() => false)) { await cont.click(); dlg = await waitForEasyApplyDialog(page, 12000); }
     }
     // If we matched a "Job search safety reminder" dialog (no real form fields), dismiss it and re-find the real apply dialog.
-    if (await dlg.isVisible().catch(() => false)) {
+    if (dlg && await dlg.isVisible().catch(() => false)) {
       const dlgText = await dlg.innerText().catch(() => '');
       if (/safety reminder|safety tips|research the company|report suspicious/i.test(dlgText)) {
         const contBtn = dlg.getByRole('link', { name: /continue applying/i }).or(dlg.getByRole('button', { name: /continue applying/i })).first();
@@ -607,12 +632,11 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
           await contBtn.click().catch(() => {});
           await SLEEP(1500);
           // re-select the actual apply dialog (not the safety one)
-          dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit/i }) }).first();
-          await dlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+          dlg = await waitForEasyApplyDialog(page, 12000);
         }
       }
     }
-    if (!(await dlg.isVisible().catch(() => false))) {
+    if (!dlg || !(await dlg.isVisible().catch(() => false))) {
       await encounter('easy_apply', 'dialog did not open', { url, page });
       await page.close(); return { ok: false, result: 'error', detail: 'Easy Apply dialog did not open', meta };
     }
@@ -704,18 +728,16 @@ async function openEasyApplyDialog(page, url) {
     await page.close().catch(() => {});
     return { done: { ok: false, result: clickResult.throttled ? 'throttled' : 'error', detail: clickResult.detail, meta } };
   }
-  let dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit|continue/i }) }).first();
-  await dlg.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-  if (await dlg.isVisible().catch(() => false)) {
+  let dlg = await waitForEasyApplyDialog(page);
+  if (dlg && await dlg.isVisible().catch(() => false)) {
     const dlgText = await dlg.innerText().catch(() => '');
     if (/safety reminder|safety tips|research the company/i.test(dlgText)) {
       await dlg.getByRole('link', { name: /continue applying/i }).or(dlg.getByRole('button', { name: /continue applying/i })).first().click().catch(() => {});
       await SLEEP(1500);
-      dlg = page.locator('dialog').filter({ has: page.getByRole('button', { name: /next|review|submit/i }) }).first();
-      await dlg.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      dlg = await waitForEasyApplyDialog(page, 12000);
     }
   }
-  if (!(await dlg.isVisible().catch(() => false))) return { done: { ok: false, result: 'error', detail: 'dialog did not open', meta } };
+  if (!dlg || !(await dlg.isVisible().catch(() => false))) return { done: { ok: false, result: 'error', detail: 'dialog did not open', meta } };
   return { dlg, meta };
 }
 
