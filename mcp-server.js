@@ -522,7 +522,7 @@ const TOOLS = [
 ];
 
 // ── Server wiring ─────────────────────────────────────────────────────────────
-const server = new Server({ name: 'job-agent-mcp', version: '3.0.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'job-agent-mcp', version: '3.1.0' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
