@@ -1,169 +1,184 @@
 <div align="center">
 
-# 🧭 JobPilot
+# JobPilot
 
-### The self-evolving, agent-driven job hunter that lives in *your* browser.
+### A brain on top. Tools underneath. A system that rewrites itself when it gets stuck.
 
-**Bring your own AI coding agent as the brain. JobPilot is the hands, the memory, and the
-nervous system — it applies for you across four channels, learns from every failure, and ships
-its own fixes back to this repo.**
+Your coding agent is the brain. JobPilot has no model of its own. It is the MCP tool server,
+the browser hands, the dedup memory, and the loop that turns a stuck page into a fix on GitHub.
 
-[![MIT License](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/protocol-MCP-3b82f6.svg)](https://modelcontextprotocol.io)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933.svg)](https://nodejs.org)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-a855f7.svg)](CONTRIBUTING.md)
-[![Self-evolving](https://img.shields.io/badge/%F0%9F%A7%AC-self--evolving-f59e0b.svg)](#-the-self-evolution-loop)
+**Stable release: [v3.0.0](https://github.com/maazbin/jobpilot/releases/tag/v3.0.0)**
+
+[![Stable](https://img.shields.io/badge/release-v3.0.0-22c55e.svg)](https://github.com/maazbin/jobpilot/releases/tag/v3.0.0)
+[![MIT License](https://img.shields.io/badge/license-MIT-14532d.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/protocol-MCP-2563eb.svg)](https://modelcontextprotocol.io)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-166534.svg)](https://nodejs.org)
 
 ![JobPilot demo](docs/demo.gif)
 
-<sub>▶️ Full-quality demo video: [`docs/demo.mp4`](docs/demo.mp4)</sub>
+<sub>Full-quality demo: [`docs/demo.mp4`](docs/demo.mp4)</sub>
 
 </div>
 
 ---
 
-## 💡 What is this?
+## The shape of it
 
-JobPilot is an [MCP](https://modelcontextprotocol.io) server with **no LLM of its own**. *Your*
-coding agent — Claude Code, Codex, Kiro, Crew, Grok CLI — is the brain. You point it at JobPilot
-and say *“find and apply to AI jobs.”*
+One brain. It never starts a second brain. The worker only collects leads. Every email, Easy Apply,
+portal application, and connection request is a decision the brain makes, then a tool it calls.
 
-The agent reasons. JobPilot provides:
+```mermaid
+flowchart TB
+  you["You"] --> brain["Brain — Grok, Codex, Claude, Gemini, or any MCP CLI"]
+  brain -->|"reads AGENTS.md, calls tools"| mcp["JobPilot MCP"]
 
-- **🖐 Hands** — it drives *your* already-logged-in Chrome (LinkedIn, Gmail, ATS) over the DevTools protocol.
-- **🧠 Memory** — a local dedup database so you never double-apply, across runs or agents.
-- **🧬 A nervous system** — it records every failure, *learns from it*, and gets measurably better each session.
+  subgraph tools ["Tools the brain drives"]
+    direction LR
+    search["Search the open web"]
+    act["Email · Easy Apply · ATS · Connect"]
+    memory["Dedup memory"]
+    evolve["Evolution memory"]
+  end
 
-No API keys. No SMTP passwords. No scraping of other people's data. Your sessions, your machine, your data.
+  mcp --> tools
+  search --> db[("jobs.db")]
+  act --> chrome["Your logged-in Chrome"]
+  chrome --> gmail["Gmail"]
+  chrome --> linkedin["LinkedIn"]
+  chrome --> ats["Greenhouse · Lever · Ashby · Workable"]
+  act --> memory
+  memory --> db
 
----
+  worker["Data-only worker\nscout + dashboard"] --> db
+  db --> brain
 
-## ⚡ What it actually does — four channels, freshest-first
-
-| Channel | What happens |
-|---|---|
-| ✉️ **Email** | Finds hiring emails in LinkedIn posts, HN "Who is hiring", Reddit & boards → sends a tailored email from **your Gmail**, CV auto-attached & verified. |
-| ⚡ **LinkedIn Easy Apply** | Walks the multi-page modal, answers every question, uploads your CV, and **verifies "Application submitted."** |
-| 📋 **External ATS forms** | Greenhouse · Lever · Ashby · Workable — resolves job-board links to the real ATS, fills react-selects / radios / consent, submits, confirms. |
-| 🔗 **LinkedIn connect + note** | When there's no email/form, sends the poster a personalized connection request. |
-
-Everything is ordered **newest-posted first** — because the first applicant gets read.
-
----
-
-## 🧬 The self-evolution loop
-
-This is what makes JobPilot different from every other job bot. **It is always-on in every way you
-run the system** — through your agent, the always-on worker, or even the standalone dashboard
-server. There is no supported way to run JobPilot that bypasses self-evolution; it's the point.
-
-Every time it hits something it can't handle — a weird Easy Apply question, a form with no submit
-button, a login-gated ATS — it records an **encounter**: a normalized signature, a running count,
-and a saved **screenshot + HTML snapshot** under `data/evolution/`. Then it:
-
-1. **🩹 Tries to self-heal first.** A fire-and-forget heal pass (`attemptSelfHeal`) reasons about
-   the failure signature and attempts a lightweight recovery (re-click a hidden submit, re-open a
-   stale dialog, …) — **without ever blocking the job-hunting pipeline.**
-2. **🪄 Harvests** the answers you've *already* filled on LinkedIn (your real years-of-experience,
-   salary, work-authorization) and reuses them everywhere — fuzzy-matched, so a reworded question
-   reuses the same answer instead of asking you again.
-3. **🙋 Asks you once.** Anything it genuinely can't infer becomes a *“question for you”* in the
-   dashboard — answer it one time, remembered forever. Answers the agent derives itself from your
-   profile are shown under *“🤖 agent answered”* so you can review/override them.
-4. **📈 Reweights itself.** It tracks which search queries and ATS domains actually convert and
-   shifts toward what works (UCB bandit), auto-skipping dead ends.
-5. **🔁 Contributes back + reviews PRs (on by default).** A dedicated **evolver** lane — running at
-   the *same priority as job applying* — keeps the fork in sync with `main`, opens PRs for its own
-   fixes, and (on the main repo) **reviews & merges open PRs from *every* contributor**, including
-   other agents' forks. It files GitHub issues for blockers it can't fix.
-
-> Your coding agent reads the auto-generated `data/evolution/PLAYBOOK.md`, patches the relevant
-> module, marks the encounter fixed — and the fix is pushed back for everyone. **The repository
-> literally improves itself, session over session.**
-
-### How contribution works (fork vs. main repo)
-
-- **If your clone is a fork** → the evolver keeps it continuously rebased on `upstream/main`, and
-  opens a **PR to the main repo** for every change. When a PR merges, it **syncs again** so the
-  fork never drifts.
-- **If you own the main repo** → the evolver **reviews and merges every open PR** — from this agent
-  *and* from other contributors' forks. Each PR is judged on **usefulness** — the merits of its diff
-  plus any issues it links — **not on its label or author**. It approves pending fork CI so the
-  security gate can run, merges useful PRs (even forcing past a stuck mechanical auto-merge),
-  resolves conflicts where it can, and detects superseded/redundant PRs and closes them. **The one
-  gate never bypassed is the CI security/data-safety check** — a failing security gate blocks the
-  merge no matter who opened the PR.
-- Commits are authored as the **GitHub username** (never a real/personal name), with the account's
-  noreply email. Hard-guarded: the push aborts if anything under `data/`, `.env*`, drafts, logs,
-  screenshots, or the DB is ever staged.
-
----
-
-## 🙋 You're always in the loop (it never guesses the things that matter)
-
-JobPilot does **not** invent answers to questions like salary, visa/work-authorization, or notice
-period. Here's exactly how an application question gets answered, in order:
-
-1. **From the post + your profile.** Most screening questions are already answered by what you gave
-   it (years of experience, location, links, country-specific salary expectations) or stated in the job post itself.
-2. **Harvested from your own LinkedIn.** It reuses the answers you've *already* filled on past
-   Easy Apply forms — your real numbers, not a model's guess.
-3. **It asks you — once.** Anything it genuinely can't infer becomes a **question for you** in the
-   dashboard's 🧠 **Questions** tab. You answer it one time; it's stored and **reused on every
-   future application** (and fuzzy-matched + stemmed, so a reworded version of the same question
-   still hits — you're not asked twice). Nothing is submitted on a required field it had to guess.
-   Anything the agent *did* answer from your profile shows under **🤖 agent answered** so you can
-   review or override it.
-
-```
-unknown question ─▶ parked in the Questions tab ─▶ you answer once ─▶ remembered forever
-                                                                      (reused + fuzzy-matched)
+  chrome -->|"stuck page, screenshot + HTML"| evolve
+  evolve -->|"patch the module"| repo["GitHub"]
+  repo -->|"next session reads the fix"| brain
 ```
 
-So salary and work-authorization are exactly the things a **person** decides — the agent surfaces
-them to you and remembers your call. If a login ever lapses mid-run, you get the same treatment: a
-one-click "log in here" banner, and it resumes automatically once you're back in.
+A single lead moves like this. The brain picks the channel. The tool does one concrete action.
 
-> Verify it yourself: `node scripts/verify-loop.mjs` walks an unknown question through
-> park → answer-once → reuse → fuzzy-match.
+```mermaid
+flowchart LR
+  lead["Fresh lead"] --> judge{"Relevant?\nAlready contacted?"}
+  judge -->|no| skip["Record a skip and why"]
+  judge -->|email| mail["send_email\nCV attached"]
+  judge -->|Easy Apply| easy["apply_linkedin_easy\nstop at the safety cap"]
+  judge -->|ATS or board| form["apply_portal\nreal Greenhouse / Lever / Ashby / Workable"]
+  judge -->|poster only| connect["linkedin_connect\nshort note"]
+  mail --> done["Never touch that lead again"]
+  easy --> done
+  form --> done
+  connect --> done
+  skip --> done
+```
 
----
+When a page wins, the system does not drop the lead and forget. It keeps the evidence and the fix comes back as code.
 
-## 🏆 What's been achieved
-
-- **All four channels working end-to-end** against the live 2026 LinkedIn / ATS DOM — including the
-  shadow-DOM Easy Apply modal and the "Connect is hidden under the More menu" profile layout.
-- **A real answer engine** that harvests your prefilled answers, reuses them for *similar* questions
-  (fuzzy + stemmed matching), selects salary expectations by country/currency, converts
-  currencies/periods, keeps current salary separate, handles yes/no work-auth
-  logic, shows you everything it auto-answered, and escalates only the truly-unknown.
-- **A concurrent, never-stop worker** — scout · mailer · applier · connector · **evolver** run in
-  parallel lanes under a supervisor that auto-restarts any lane that crashes; global crash handlers
-  + process respawn mean one bad lead or page never halts the pipeline. The detached worker is
-  designed to **outlive your agent session** — the MCP server does **not** write `data/.stop` when
-  the agent disconnects, so only an explicit user Stop (dashboard ⏹ / `npm run stop`) halts the loop.
-- **Self-evolution as a first-class lane** — the `evolver` runs at the same priority as applying:
-  it syncs with `main` + reviews/merges open PRs every ~2 min and contributes every ~10 min.
-- **Usefulness-first PR review** — on the main repo, every open PR (any contributor, any fork, any
-  label) is judged on the merits of its diff plus the issues it links — not on its label or author.
-  Empty PRs are closed, superseded ones are detected and closed, conflicts are resolved where safe,
-  and the CI security/data-safety gate is the one check never bypassed.
-- **Country-scope action gating** — old/global queue entries and off-scope locations no longer leak
-  into outreach or applications when the profile is set to country scope.
-- **Tougher LinkedIn + form resilience** — note-less invites on custom-invite pages, a graceful
-  fallback when LinkedIn's free note quota is exhausted, and learned form-skips surfaced as
-  `needs_manual` (with the failing domain) instead of silently stalling leads.
-- **A modular pipeline dashboard** (`src/dashboard/` partials) with per-lane live status, a 🧠
-  Questions tab (with 🤖 agent-answered review), and a 🧬 Evolution tab showing every blocker with
-  its screenshot + HTML snapshot.
-- **Zero personal data in the codebase** — everything about you lives in `data/` (gitignored).
+```mermaid
+flowchart LR
+  fail["Stuck page"] --> snap["Screenshot + HTML\nunder data/evolution"]
+  snap --> play["PLAYBOOK.md"]
+  play --> patch["Brain patches the module"]
+  patch --> pr["contribute_improvements\nPR to GitHub"]
+  pr --> sync["Sync main\nnext run is smarter"]
+  sync --> fail
+```
 
 ---
 
-## 🚀 Getting started (clone → tell your agent → done)
+## What the brain does, and what the tools do
 
-JobPilot ships with ready-made MCP config for every popular agent, so there's **nothing to wire up
-by hand** — no absolute paths, no JSON surgery.
+| | Brain (your CLI) | JobPilot |
+|---|---|---|
+| Decides | Which roles, which country, which channel, what the email says, when to stop | Nothing. No LLM lives here. |
+| Acts | Calls one tool per action | Drives your Chrome, sends the mail, fills the form, writes the row |
+| Remembers | Reads the bank and the playbook | `data/jobs.db` dedups email, apply, and connect across runs and across agents |
+| Improves | Patches the module that failed | Saves the encounter, opens the PR, refuses to commit `data/` or credentials |
+
+No API keys. No SMTP. Sessions stay in your browser. Personal data stays in `data/`, which git ignores.
+
+---
+
+## Four channels
+
+Newest posts first. The brain chooses. Tools do not pick a channel on their own.
+
+| Channel | Tool | What “done” means |
+|---|---|---|
+| Email | `send_email` | Sent from your Gmail. CV attached. Portfolio and links come from the profile. |
+| LinkedIn Easy Apply | `apply_linkedin_easy` | Modal walked, questions answered, “Application submitted” seen. |
+| External form | `apply_portal` | Job-board URL resolved to the real ATS, then submitted. |
+| Connect | `linkedin_connect` | A short note to the poster when there is no email and no form. |
+
+Email is uncapped because it is your Gmail. The brain paces it. Easy Apply is capped: JobPilot refreshes the public daily limit, stops at 80% (default 50/day, so stop at 40), and waits a random 90–240s between submissions. A failed lookup never raises the cap.
+
+---
+
+## v3.0.0 — what this stable line solved
+
+This is the line we will keep. New work happens after this tag.
+
+**The architecture**
+
+- The worker is data-only when you run `npm run agent`. It scrapes into `data/jobs.db` and refreshes the dashboard. It does not email, apply, or connect.
+- One brain never starts another. There is no dispatcher that launches Codex, Grok, Claude, or Gemini.
+- `AGENTS.md` is the only operating guide. Any MCP coding agent can drive the same tools.
+
+**Outreach that used to fail quietly**
+
+- Known-fake hiring addresses live in [`src/fake-emails.txt`](src/fake-emails.txt), one address per line. Send refuses that list. Adding a decoy is a file edit, not a new regular expression.
+- Titles that match the profile (backend, Python, AI, platform, and the rest of the role list) stay in the email bank. They are no longer dropped as “not the CV.”
+- An answer you type in the Questions tab survives when the worker saves the database. The newer answer wins, so a second process cannot put the question back.
+- Salary questions can convert the profile currency into SAR and QAR, and current pay stays separate from the expected range.
+- Lever’s real control is `Submit application`. The hidden hCaptcha button is no longer treated as the submit button. A live captcha can still stop the submit. That is an open problem, not a solved one.
+- Phone-country widgets and cookie bars are closed before an external form is submitted.
+- Easy Apply treats an intercepted LinkedIn click as a throttle and backs off, instead of hammering the page.
+- Each job can select a private CV variant from `preferences.cvVariants`. The canonical CV stays the fallback. Resumes never go in git.
+- Search treats Middle East, EU, relocation, and visa sponsorship as desirable. Country scope still blocks outreach outside the profile when that scope is on.
+
+**The loop around the code**
+
+- `contribute_improvements` syncs, files blockers, and opens or reviews PRs. Forks track upstream. The main repo reviews useful PRs from any author.
+- The CI security gate blocks `data/`, credentials, and secrets. The syntax check skips files a PR deleted, so a deletion does not fail the build.
+- Commits from the evolver are authored as the GitHub username, not a personal name or a personal email.
+
+---
+
+## Still open
+
+These are real walls. JobPilot records them and routes around them. It does not pretend to slip past a bot check.
+
+- **Indeed** — anti-bot and login wall ([#1](https://github.com/maazbin/jobpilot/issues/1))
+- **Glassdoor** — login and anti-bot wall ([#2](https://github.com/maazbin/jobpilot/issues/2))
+- **Workday, iCIMS, Taleo, SuccessFactors** — account-gated, multi-step ATS ([#3](https://github.com/maazbin/jobpilot/issues/3))
+- **Some job-board redirects** — Arbeitnow, We Work Remotely, Himalayas ([#4](https://github.com/maazbin/jobpilot/issues/4))
+- **hCaptcha on Lever** — the submit button is found. A captcha challenge still needs a person.
+
+---
+
+## Questions, asked once
+
+JobPilot does not invent salary, visa, or notice period.
+
+```mermaid
+flowchart LR
+  q["Unknown question"] --> park["Questions tab"]
+  park --> you["You answer once"]
+  you --> keep["Stored answer"]
+  keep --> reuse["Reused on the next form\nfuzzy match included"]
+  profile["Profile + CV"] --> auto["Agent-answered row"]
+  auto --> review["You can override it"]
+```
+
+Verify the path with `node scripts/verify-loop.mjs`.
+
+If LinkedIn or Gmail is logged out, the dashboard shows one login link and that site waits. It does not retry in a loop.
+
+---
+
+## Start
 
 ### 1. Clone
 
@@ -172,174 +187,114 @@ git clone https://github.com/maazbin/jobpilot
 cd jobpilot
 ```
 
-### 2. Open the folder in your agent and just talk to it
+### 2. Open the folder in your agent
 
-Say something like:
+Say:
 
-> *““kill old workers and processes then find and apply to relavent  jobs — and keep self-evolving + contributing PRs while you do””*
+> Find relevant jobs, write to the people who are hiring, and keep the evolution loop moving.
 
-You don't have to spell out the self-evolution part — it's always on — but it's a good reminder of
-what the agent will do. Other things you can tell it:
+The repo already contains the MCP config. `start.js` installs dependencies, opens Chrome on the debug port, and serves the tools. Approve the server if the CLI asks.
 
-- *“set my location scope to worldwide”* (or `continent` / `country`) — how far to search.
-- *“answer screening questions from my CV where you can, only ask me when you're truly stuck.”*
-- *“review and merge any open PRs, including from other contributors.”*
-- *“keep running and never stop.”*
+Set `JOBPILOT_NO_AUTOWORKER=1` on the MCP server so it stays a tool server and does not start a second worker.
 
-Because the repo already contains the config your agent looks for, it **auto-discovers** the
-`jobpilot` MCP server and launches it via `start.js` — which self-installs dependencies on first
-run, relaunches your Chrome with the debug port + session restore, and starts the server. You may
-get a one-time "approve this MCP server?" prompt — say yes.
-
-| Agent | What's already in the repo | You do |
+| Agent | Config in the repo | You |
 |---|---|---|
-| **Claude Code** | `.mcp.json` | open the folder, approve the server |
-| **Cursor** | `.cursor/mcp.json` | open the folder, enable it in Settings → MCP |
-| **Kiro** | `.kiro/settings/mcp.json` | open the folder — it's picked up automatically |
-| **VS Code / Copilot** | `.vscode/mcp.json` | open the folder, click **Start** on the server |
-| **Gemini CLI** | `.gemini/settings.json` | run `gemini` from the folder |
-| **Codex CLI** | `.codex/config.toml` | `export CODEX_HOME="$(pwd)/.codex"` then run `codex` (TOML, not JSON) |
+| Claude Code | `.mcp.json` | Open the folder, approve the server |
+| Cursor | `.cursor/mcp.json` | Enable it in Settings, MCP |
+| Kiro | `.kiro/settings/mcp.json` | Open the folder |
+| VS Code / Copilot | `.vscode/mcp.json` | Start the server |
+| Gemini CLI | `.gemini/settings.json` | Run `gemini` from the folder |
+| Codex | `~/.codex/config.toml` | Add the `jobpilot` server there. Do not repoint `CODEX_HOME`. |
+| Grok | `.grok/config.toml` | `grok mcp add jobpilot --scope project node -- start.js` |
 
-> All configs use a **relative** `node start.js`, so they work no matter where you cloned the repo —
-> as long as you open/run the agent from the repo folder. Claude Desktop and Windsurf use a global
-> config file; copy the block from `.mcp.json` into theirs (see below).
+<details><summary>Claude Desktop and Windsurf</summary>
 
-<details><summary>Manual / global clients (Claude Desktop, Windsurf)</summary>
+Add this to the global MCP config, with the absolute path to `start.js`:
 
-**Claude Desktop** — add to `claude_desktop_config.json` (use the absolute path to `start.js`):
 ```json
-{ "mcpServers": { "jobpilot": { "command": "node", "args": ["ABSOLUTE/PATH/TO/start.js"] } } }
+{ "mcpServers": { "jobpilot": { "command": "node", "args": ["ABSOLUTE/PATH/TO/start.js"], "env": { "JOBPILOT_NO_AUTOWORKER": "1" } } } }
 ```
 
-**Windsurf** — add the same block to `~/.codeium/windsurf/mcp_config.json`.
 </details>
 
-### 3. The agent takes it from here
+### 3. Let the brain drive
 
-Guided by [`AGENTS.md`](AGENTS.md), it checks setup (`onboard_status`), launches your Chrome
-(`launch_chrome`, restoring your tabs/logins), opens a local **setup form** where you drag-and-drop
-your CV and paste your links/roles (never a file path in chat), then scrapes, dedups, emails, and
-applies — reporting live on the dashboard. If a login ever lapses, it shows a one-click
-"log in here" link.
+[`AGENTS.md`](AGENTS.md) is the standing guide. The brain checks `onboard_status`, opens `http://127.0.0.1:7788/onboard` if the profile has gaps, and then searches, judges, and acts. You upload the CV in that form. You never paste a file path into chat.
 
-### Prefer the always-on engine? Skip the agent entirely:
+Keep the hands alive in another terminal:
 
 ```bash
-npm install && npm run worker          # or: npm run worker:forever  (respawns on crash)
+npm install
+npm run agent
 ```
 
-Five concurrent lanes (scout · mailer · applier · connector · **evolver**), freshest-first,
-self-evolving, with the dashboard + Questions tab + a **⏹ Stop** button live at
-**http://127.0.0.1:7788**. It **never stops on its own**: every lane auto-restarts if it throws,
-global crash handlers keep the process alive, and `worker:forever` respawns the whole process if it
-ever dies. Flags: `DRY=1` (scrape only), `RUN_MS=<ms>` (time-box). The only thing that stops it is
-the dashboard **⏹ Stop** button (or `npm run stop`).
+That process only scrapes and refreshes the dashboard. Stop it with the dashboard button or `npm run stop`.
 
----
+`npm run worker` still contains the older action lanes. The supported setup is `npm run agent` plus your own CLI as the brain, so outreach is never double-sent.
 
-### Per-job CV variants
+### CV variants
 
-The canonical `cvPath` remains the fallback, but `preferences.cvVariants` can list private
-local resume variants. Each entry may provide an `id`, `label`, `path`, `focuses`, and
-`keywords`; the worker scores the job title and description for provider/domain signals such as
-AWS, Azure, GCP, SRE, DataOps, or MLOps, then uploads the best matching configured file. The
-selected variant and matching reason appear in the dashboard CV report. Keep these paths in the
-ignored per-user profile; never commit resumes, profile data, credentials, or invented experience.
+The canonical CV is the fallback. Optional variants stay in the private profile:
 
 ```json
 {
   "preferences": {
     "cvVariants": [
-      { "id": "aws", "label": "AWS CV", "path": "/private/path/aws.pdf", "focuses": ["aws"], "keywords": ["eks", "s3"] },
-      { "id": "sre", "label": "SRE CV", "path": "/private/path/sre.pdf", "focuses": ["sre"], "keywords": ["slo", "observability"] }
+      { "id": "aws", "label": "AWS CV", "path": "/private/path/aws.pdf", "focuses": ["aws"], "keywords": ["eks", "s3"] }
     ]
   }
 }
 ```
 
-Missing job requirements are reported for review. JobPilot does not add unverified skills or
-employment history to a resume.
-
-## 📊 The dashboard
-
-A local-only UI at **http://127.0.0.1:7788** (bound to localhost):
-
-- **Pipeline** — fresh email leads first, then per-channel queues, newest-posted first, with live per-lane status.
-- **🧠 Questions** — answer anything the agent couldn't, inline (remembered forever). A **🤖 agent
-  answered** section shows every answer the agent derived from your profile, with a one-click
-  **override**.
-- **🧬 Evolution** — every open encounter with its screenshot + HTML snapshot, plus the learned-answers table.
-- **Done log / Emails sent / Connects** — a full audit trail with over-contact warnings.
-
-> The UI is built from small partials under `src/dashboard/` (coordinator + `styles.js` +
-> `helpers.js` + `partials/`), so it's easy to modify a single section without touching the rest.
+JobPilot does not invent skills or employers to fill a gap.
 
 ---
 
-## 🧱 Known blockers (help wanted!)
+## Dashboard
 
-Some sites actively fight automation or gate applications behind accounts. JobPilot handles these
-gracefully (routes the lead elsewhere / asks you) and we track them as open issues:
+Local only: **http://127.0.0.1:7788**
 
-- **Indeed** — anti-bot / login wall ([#1](https://github.com/maazbin/jobpilot/issues/1))
-- **Glassdoor** — login + anti-bot wall ([#2](https://github.com/maazbin/jobpilot/issues/2))
-- **Workday / iCIMS / Taleo / SuccessFactors** — account-gated multi-step ATS ([#3](https://github.com/maazbin/jobpilot/issues/3))
-- **Job-board redirects** (Arbeitnow / WeWorkRemotely / Himalayas) ([#4](https://github.com/maazbin/jobpilot/issues/4))
+- **Pipeline** — fresh leads, newest first, with per-lane status.
+- **Questions** — one answer, remembered. Agent-answered rows can be overridden.
+- **Evolution** — open encounters, screenshot, HTML snapshot, learned answers.
+- **Audit** — emails sent, applications, connects. Dedup warnings included.
 
-Want to knock one out? See [CONTRIBUTING.md](CONTRIBUTING.md) — these make great first PRs.
+The UI is split under `src/dashboard/` so one section can change without a rewrite of the page.
 
 ---
 
-## 🗂 Project structure
+## Layout
 
 ```
 jobpilot/
-├── start.js                # ← MCP config points HERE (self-installs, launches Chrome, respawns server on crash)
-├── mcp-server.js           # the MCP server (32 fine-grained tools) + always-on self-evolution loop
-├── AGENTS.md               # the guide your agent reads to drive everything zero-touch
-├── CODING_STANDARDS.md     # conventions for every file (ESM, JSDoc, no personal data, …)
+├── start.js                 # MCP entry: install, Chrome, respawn
+├── mcp-server.js            # tool server + evolution loop
+├── AGENTS.md                # the only brain guide
 ├── src/
-│   ├── worker.js           # always-on engine: scout · mailer · applier · connector · evolver (concurrent, supervised)
-│   ├── evolve.js           # self-evolution memory: encounters · self-heal · learned answers · strategy bandit
-│   ├── evolve-loop.js      # background self-evolution for agent/server mode (stands down while worker is live)
-│   ├── contribute.js       # self-improving loop: syncs, opens/reviews/merges PRs, files issues (data-safe)
-│   ├── profile.js          # personalization + location scope — read from data/ (gitignored)
-│   ├── tracker.js          # jobs DB + dedup guards + channel queues
-│   ├── dashboard/          # modular dashboard: index.js (coordinator) + styles + helpers + partials/
-│   ├── server.js           # local web server: onboarding, dashboard, /api/answers, /evidence
-│   └── mcp/                # sources · easyapply · forms · connect · answers · gmail · chrome
-├── scripts/
-│   ├── worker-forever.mjs  # respawns the worker process if it ever dies (never-stop)
-│   └── ci-security-scan.mjs# CI data-safety gate (blocks any PR that stages data/creds)
-├── data/                   # EVERYTHING personal lives here — gitignored
-└── docs/demo.gif
+│   ├── worker.js            # scout and dashboard; outreach only if not data-only
+│   ├── evolve.js            # encounters, answers, strategy
+│   ├── evolve-loop.js       # evolution while the worker is down
+│   ├── contribute.js        # sync, PR, review — never commits data/
+│   ├── tracker.js           # jobs.db, dedup, answer merge across processes
+│   ├── fake-emails.txt      # known-fake addresses, one per line
+│   ├── dashboard/           # local UI
+│   └── mcp/                 # gmail, easy apply, forms, connect, answers, sources
+├── scripts/agent-forever.mjs # never-stop supervisor for the data-only worker
+└── data/                    # profile, CV, DB — gitignored
 ```
 
 ---
 
-## 🔒 Privacy & safety
+## Privacy
 
-- **Your data never leaves your machine.** Profile, CV, scraped jobs, dedup history, harvested
-  answers, and the logged-in Chrome profile all live under `data/`, which is **gitignored**.
-- **No credentials in code.** JobPilot uses your existing browser sessions — no API keys, no SMTP.
-- **The self-contribution loop is data-safe by construction**: on by default, but an allowlist + a
-  sensitive-path tripwire abort any push that would include `data/`, `.env`, drafts, logs,
-  screenshots or the DB. Toggle it off from the dashboard anytime.
-- **Dedup is permanent**, and daily caps + attempt limits are enforced and recorded.
-- **Easy Apply is account-safe.** LinkedIn restricts accounts that over-apply, so JobPilot keeps a
-  daily-refreshed estimate of the real Easy Apply limit (conservative default 50/day) and **stops at
-  an 80% safety buffer** (e.g. 40/day) — then waits a randomized cooldown (~90–240s) after each
-  submission so applications never look like a bot-like burst. A bad or offline refresh never raises
-  the cap. Email, forms, and connect keep running when Easy Apply is paused.
+- Profile, CV, jobs, answers, and the Chrome profile stay in `data/`.
+- Contribution refuses to stage `data/`, `.env`, drafts, logs, screenshots, or the database. CI checks the same rule.
+- Dedup is permanent. Easy Apply stops before the account limit.
 
----
+## Contributing
 
-## 🤝 Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md). A useful change is a new ATS path, a new public source, or a fix for an encounter in `data/evolution/PLAYBOOK.md`, followed by `contribute_improvements`.
 
-Issues and PRs are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Great first contributions:
-a new ATS adapter in `src/mcp/forms.js`, a new lead source in `src/mcp/sources.js`, or a resilience
-fix driven by a real encounter in `data/evolution/PLAYBOOK.md`.
-
-## 📄 License
+## License
 
 [MIT](LICENSE) © [maazbin](https://github.com/maazbin) and JobPilot contributors.
